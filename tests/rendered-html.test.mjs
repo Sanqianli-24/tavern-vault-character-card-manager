@@ -12,13 +12,13 @@ async function render() {
   );
 }
 
-test("renders the Tavern Vault character library", async () => {
+test("renders the Chinese character library", async () => {
   const response = await render();
   assert.equal(response.status, 200);
   assert.match(response.headers.get("content-type") ?? "", /^text\/html\b/i);
   const html = await response.text();
-  assert.match(html, /<title>Tavern Vault｜角色卡书架<\/title>/i);
-  assert.match(html, /Tavern Vault/);
+  assert.match(html, /<title>酒馆角色卡库｜角色卡管理器<\/title>/i);
+  assert.match(html, /酒馆角色卡库/);
   assert.match(html, /导入文件夹/);
   assert.match(html, /全部角色/);
   assert.match(html, /露娜・月下信使/);

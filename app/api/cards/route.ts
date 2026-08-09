@@ -37,8 +37,8 @@ export async function POST(request: Request) {
     }
 
     await DB.prepare(`INSERT INTO character_cards
-      (id, name, file_name, file_type, size, rating, tags, bookshelf, image_key, description, source_path, created_at, modified_at)
-      VALUES (?, ?, ?, ?, ?, 0, '[]', ?, ?, '', ?, ?, ?)`)
+      (id, name, file_name, file_type, size, rating, favorite, tags, bookshelf, image_key, description, source_path, created_at, modified_at)
+      VALUES (?, ?, ?, ?, ?, 0, 0, '[]', ?, ?, '', ?, ?, ?)`)
       .bind(id, name, fileName, fileType, size, bookshelf, imageKey, sourcePath, now, now)
       .run();
 

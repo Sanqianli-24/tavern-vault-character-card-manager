@@ -1,0 +1,1 @@
+ALTER TABLE `character_cards` ADD `favorite` integer DEFAULT 0 NOT NULL;
