@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState, type ChangeEvent, type DragEvent, type KeyboardEvent } from "react";
+import { useEffect, useMemo, useRef, useState, useSyncExternalStore, type ChangeEvent, type DragEvent, type KeyboardEvent } from "react";
 
 type CharacterCard = {
   id: string;
@@ -33,6 +33,31 @@ type CharacterCard = {
 };
 
 type SortMode = "explorer" | "name-desc" | "newest" | "oldest" | "rating" | "size";
+
+type ThemeName = "dark" | "fresh";
+
+const THEMES: { id: ThemeName; label: string; icon: string }[] = [
+  { id: "dark", label: "深邃", icon: "◐" },
+  { id: "fresh", label: "清新", icon: "❀" },
+];
+const THEME_STORAGE_KEY = "tavern-vault-theme";
+
+const themeListeners = new Set<() => void>();
+
+function readTheme(): ThemeName {
+  return document.documentElement.dataset.theme === "fresh" ? "fresh" : "dark";
+}
+
+function applyTheme(next: ThemeName) {
+  document.documentElement.dataset.theme = next;
+  window.localStorage.setItem(THEME_STORAGE_KEY, next);
+  for (const listener of themeListeners) listener();
+}
+
+function subscribeTheme(listener: () => void) {
+  themeListeners.add(listener);
+  return () => themeListeners.delete(listener);
+}
 
 const demoCards: CharacterCard[] = [
   {
@@ -246,6 +271,7 @@ export default function CharacterManager() {
   const [tagPickerOpen, setTagPickerOpen] = useState(false);
   const [tagSearch, setTagSearch] = useState("");
   const [isDesktop, setIsDesktop] = useState(false);
+  const theme = useSyncExternalStore(subscribeTheme, readTheme, () => "dark" as ThemeName);
   const [tavernPanelOpen, setTavernPanelOpen] = useState(false);
   const [tavernProgress, setTavernProgress] = useState<TavernLaunchProgress>(initialTavernProgress);
   const [bulkSelected, setBulkSelected] = useState<Set<string>>(new Set());
@@ -257,6 +283,11 @@ export default function CharacterManager() {
   const folderInputRef = useRef<HTMLInputElement>(null);
   const pendingUpdatesRef = useRef<Map<string, { timer: number; patch: Partial<CharacterCard> }>>(new Map());
   const dragDepthRef = useRef(0);
+
+  useEffect(() => {
+    const stored = window.localStorage.getItem(THEME_STORAGE_KEY);
+    if ((stored === "dark" || stored === "fresh") && readTheme() !== stored) applyTheme(stored);
+  }, []);
 
   useEffect(() => {
     if (window.desktopAPI) {
@@ -779,6 +810,15 @@ export default function CharacterManager() {
               onChange={onFileChange}
               {...({ webkitdirectory: "", directory: "" } as Record<string, string>)}
             />
+            <button
+              className="theme-toggle"
+              onClick={() => applyTheme(theme === "dark" ? "fresh" : "dark")}
+              aria-label={`切换界面主题，当前为${THEMES.find((item) => item.id === theme)?.label}主题`}
+              title="切换界面主题"
+            >
+              <span aria-hidden="true">{THEMES.find((item) => item.id === theme)?.icon}</span>
+              {THEMES.find((item) => item.id === theme)?.label}
+            </button>
             <button className="more-button" aria-label="更多选项">•••</button>
           </div>
         </header>
