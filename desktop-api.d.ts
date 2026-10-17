@@ -39,19 +39,93 @@ type TavernLaunchProgress = {
 type DesktopImportEntry = {
   file: File;
   suggestedName: string;
-  sourcePath: string;
+  sourcePath?: string;
 };
+
+type DesktopImportResult = {
+  cards: DesktopCharacterCard[];
+  skipped: number;
+  duplicates: number;
+};
+
+type DesktopExportResult = {
+  ok: boolean;
+  canceled?: boolean;
+  path?: string;
+  error?: string;
+};
+
+type DesktopBulkExportResult = {
+  ok: boolean;
+  canceled?: boolean;
+  exported?: number;
+  failed?: number;
+  dir?: string;
+  error?: string;
+};
+
+type DesktopSettings = {
+  sillyTavernDir: string;
+  detectedDir: string;
+  dirExists: boolean;
+  appVersion: string;
+  isPortable: boolean;
+};
+
+type DesktopSettingsResult = {
+  ok: boolean;
+  sillyTavernDir?: string;
+  dirExists?: boolean;
+  error?: string;
+};
+
+type DesktopBackup = {
+  name: string;
+  mtime: string;
+  size: number;
+  cardCount: number;
+};
+
+type DesktopRestoreResult = {
+  ok: boolean;
+  cards?: DesktopCharacterCard[];
+  error?: string;
+};
+
+type DesktopUpdateResult = {
+  ok: boolean;
+  version?: string | null;
+  error?: string;
+};
+
+type DesktopUpdateStatus =
+  | { event: "available"; version?: string }
+  | { event: "not-available" }
+  | { event: "progress"; percent: number }
+  | { event: "downloaded"; version?: string }
+  | { event: "error"; message?: string };
 
 interface Window {
   desktopAPI?: {
     isDesktop: true;
     listCards(): Promise<DesktopCharacterCard[]>;
-    importCards(entries: DesktopImportEntry[]): Promise<DesktopCharacterCard[]>;
+    importCards(entries: DesktopImportEntry[]): Promise<DesktopImportResult>;
     updateCard(id: string, patch: Partial<DesktopCharacterCard>): Promise<DesktopCharacterCard | null>;
     hydrateCard(id: string): Promise<DesktopCharacterCard | null>;
     hydrateAllCards(): Promise<{ hydrated: number; total: number }>;
     updateCards(ids: string[], patch: Partial<DesktopCharacterCard>): Promise<number>;
     deleteCards(ids: string[]): Promise<number>;
+    exportCard(id: string): Promise<DesktopExportResult>;
+    exportCards(ids: string[]): Promise<DesktopBulkExportResult>;
+    getSettings(): Promise<DesktopSettings>;
+    setSettings(patch: { sillyTavernDir: string }): Promise<DesktopSettingsResult>;
+    pickDirectory(): Promise<string | null>;
+    listBackups(): Promise<DesktopBackup[]>;
+    createBackup(): Promise<{ ok: boolean; name?: string }>;
+    restoreBackup(name: string): Promise<DesktopRestoreResult>;
+    checkForUpdates(): Promise<DesktopUpdateResult>;
+    installUpdate(): Promise<DesktopUpdateResult>;
+    onUpdateStatus(callback: (status: DesktopUpdateStatus) => void): () => void;
     getTavernStatus(): Promise<TavernLaunchProgress>;
     startSillyTavern(): Promise<TavernLaunchProgress>;
     onTavernProgress(callback: (progress: TavernLaunchProgress) => void): () => void;

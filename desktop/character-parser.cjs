@@ -2,6 +2,12 @@ const fs = require("node:fs");
 const path = require("node:path");
 const zlib = require("node:zlib");
 
+const CARD_TEXT_KEYWORDS = new Set(["chara", "ccv3"]);
+
+function isCardKeyword(keyword) {
+  return CARD_TEXT_KEYWORDS.has(keyword);
+}
+
 function parseCharacterCardFile(filePath) {
   try {
     if (!filePath || !fs.existsSync(filePath)) return null;
@@ -45,19 +51,19 @@ function parsePngCharacterCard(buffer) {
     const dataStart = offset + 8;
     const dataEnd = dataStart + length;
     if (dataEnd > buffer.length) return null;
+    let decoded = null;
     if (type === "tEXt") {
       const text = buffer.subarray(dataStart, dataEnd).toString("latin1");
       const separator = text.indexOf("\0");
-      if (separator > 0 && text.slice(0, separator) === "chara") {
-        return decodeCharaPayload(text.slice(separator + 1));
+      if (separator > 0 && isCardKeyword(text.slice(0, separator))) {
+        decoded = decodeCharaPayload(text.slice(separator + 1));
       }
     } else if (type === "iTXt") {
-      const text = parsePngInternationalText(buffer.subarray(dataStart, dataEnd));
-      if (text) return text;
+      decoded = parsePngInternationalText(buffer.subarray(dataStart, dataEnd));
     } else if (type === "zTXt") {
-      const text = parsePngCompressedText(buffer.subarray(dataStart, dataEnd));
-      if (text) return text;
+      decoded = parsePngCompressedText(buffer.subarray(dataStart, dataEnd));
     }
+    if (decoded) return decoded;
     offset = dataEnd + 4;
   }
   return null;
@@ -70,14 +76,19 @@ function parsePngInternationalText(bytes) {
   };
   const keywordEnd = findNull(0);
   const keyword = bytes.subarray(0, keywordEnd).toString("latin1");
-  if (keyword !== "chara" || keywordEnd + 2 > bytes.length) return null;
+  if (!isCardKeyword(keyword) || keywordEnd + 2 > bytes.length) return null;
   const compressionFlag = bytes[keywordEnd + 1];
   const languageEnd = findNull(keywordEnd + 3);
   const translatedEnd = findNull(languageEnd + 1);
   const raw = bytes.subarray(translatedEnd + 1);
-  const text = compressionFlag === 1
-    ? zlib.inflateSync(Buffer.from(raw)).toString("utf8")
-    : raw.toString("utf8");
+  let text = null;
+  try {
+    text = compressionFlag === 1
+      ? zlib.inflateSync(Buffer.from(raw)).toString("utf8")
+      : raw.toString("utf8");
+  } catch {
+    return null;
+  }
   return decodeCharaPayload(text);
 }
 
@@ -85,8 +96,14 @@ function parsePngCompressedText(bytes) {
   const keywordEnd = bytes.indexOf(0);
   if (keywordEnd <= 0) return null;
   const keyword = bytes.subarray(0, keywordEnd).toString("latin1");
-  if (keyword !== "chara" || keywordEnd + 1 >= bytes.length) return null;
-  return decodeCharaPayload(zlib.inflateSync(Buffer.from(bytes.subarray(keywordEnd + 2))).toString("utf8"));
+  if (!isCardKeyword(keyword) || keywordEnd + 1 >= bytes.length) return null;
+  let inflated = null;
+  try {
+    inflated = zlib.inflateSync(Buffer.from(bytes.subarray(keywordEnd + 2))).toString("utf8");
+  } catch {
+    return null;
+  }
+  return decodeCharaPayload(inflated);
 }
 
 function decodeCharaPayload(payload) {

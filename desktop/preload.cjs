@@ -5,20 +5,37 @@ contextBridge.exposeInMainWorld("desktopAPI", {
   listCards: () => ipcRenderer.invoke("cards:list"),
   importCards: (entries) => ipcRenderer.invoke(
     "cards:import",
-    entries.map((entry) => ({
-      path: webUtils.getPathForFile(entry.file),
-      suggestedName: entry.suggestedName,
-      sourcePath: entry.sourcePath,
-      fileName: entry.file.name,
-      fileType: entry.file.type,
-      size: entry.file.size,
-    })),
+    (Array.isArray(entries) ? entries : [])
+      .filter((entry) => entry && entry.file)
+      .map((entry) => ({
+        path: webUtils.getPathForFile(entry.file),
+        suggestedName: entry.suggestedName,
+        sourcePath: entry.sourcePath,
+        fileName: entry.file.name,
+        fileType: entry.file.type,
+        size: entry.file.size,
+      })),
   ),
   updateCard: (id, patch) => ipcRenderer.invoke("cards:update", id, patch),
   hydrateCard: (id) => ipcRenderer.invoke("cards:hydrate", id),
   hydrateAllCards: () => ipcRenderer.invoke("cards:hydrateAll"),
   updateCards: (ids, patch) => ipcRenderer.invoke("cards:updateMany", ids, patch),
   deleteCards: (ids) => ipcRenderer.invoke("cards:delete", ids),
+  exportCard: (id) => ipcRenderer.invoke("cards:export", id),
+  exportCards: (ids) => ipcRenderer.invoke("cards:exportMany", ids),
+  getSettings: () => ipcRenderer.invoke("settings:get"),
+  setSettings: (patch) => ipcRenderer.invoke("settings:set", patch),
+  pickDirectory: () => ipcRenderer.invoke("settings:pickDirectory"),
+  listBackups: () => ipcRenderer.invoke("backups:list"),
+  createBackup: () => ipcRenderer.invoke("backups:create"),
+  restoreBackup: (name) => ipcRenderer.invoke("backups:restore", name),
+  checkForUpdates: () => ipcRenderer.invoke("update:check"),
+  installUpdate: () => ipcRenderer.invoke("update:install"),
+  onUpdateStatus: (callback) => {
+    const handler = (_event, status) => callback(status);
+    ipcRenderer.on("update:status", handler);
+    return () => ipcRenderer.removeListener("update:status", handler);
+  },
   getTavernStatus: () => ipcRenderer.invoke("tavern:status"),
   startSillyTavern: () => ipcRenderer.invoke("tavern:start"),
   onTavernProgress: (callback) => {
