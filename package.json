@@ -1,6 +1,6 @@
 {
   "name": "sillytavern-character-library",
-  "version": "0.5.7",
+  "version": "0.6.0",
   "description": "中文 SillyTavern 角色卡管理器与一键启动器",
   "author": "LongShuo",
   "private": true,
@@ -16,12 +16,12 @@
     "desktop:dev": "npm run desktop:build && electron .",
     "desktop:check": "npm run desktop:build && node --check desktop/main.cjs && node --check desktop/preload.cjs",
     "desktop:pack": "npm run desktop:build && electron-builder --win nsis portable",
-    "test": "npm run build && node --test tests/rendered-html.test.mjs",
+    "test": "npm run build && node --test tests/character-parser.test.mjs tests/rendered-html.test.mjs",
     "lint": "eslint . --ignore-pattern dist --ignore-pattern .next",
     "db:generate": "drizzle-kit generate"
   },
   "dependencies": {
-    "drizzle-orm": "0.45.2",
+    "electron-updater": "^6.8.9",
     "react": "19.2.6",
     "react-dom": "19.2.6"
   },
@@ -36,6 +36,7 @@
     "@vitejs/plugin-react": "6.0.2",
     "@vitejs/plugin-rsc": "0.5.26",
     "drizzle-kit": "0.31.10",
+    "drizzle-orm": "0.45.2",
     "electron": "^43.3.0",
     "electron-builder": "^26.15.3",
     "eslint": "9.39.4",
@@ -59,13 +60,19 @@
     "directories": {
       "output": "release"
     },
+    "publish": [
+      {
+        "provider": "github",
+        "owner": "Sanqianli-24",
+        "repo": "tavern-vault-character-card-manager"
+      }
+    ],
     "files": [
       "desktop/main.cjs",
       "desktop/preload.cjs",
       "desktop/character-parser.cjs",
       "desktop-dist/**/*",
-      "package.json",
-      "!node_modules/**/*"
+      "package.json"
     ],
     "win": {
       "icon": "desktop/icon.ico",
