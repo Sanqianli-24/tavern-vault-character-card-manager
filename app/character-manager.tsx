@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState, useSyncExternalStore, type ChangeEvent, type DragEvent, type KeyboardEvent } from "react";
+import { memo, useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore, type ChangeEvent, type DragEvent, type KeyboardEvent as ReactKeyboardEvent, type MouseEvent as ReactMouseEvent } from "react";
 
 type CharacterCard = {
   id: string;
@@ -64,24 +64,32 @@ const initialTavernProgress: TavernLaunchProgress = {
   phase: "idle",
   progress: 0,
   message: "酒馆尚未启动",
-  detail: "等待启动 D:\\SillyTavern",
+  detail: "等待配置酒馆目录",
   port: 8000,
   logs: [],
 };
 
 function formatBytes(bytes: number) {
+  if (!Number.isFinite(bytes) || bytes <= 0) return "0 KB";
   if (bytes < 1024 * 1024) return `${Math.max(1, Math.round(bytes / 1024))} KB`;
   return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
 }
 
 function formatDate(value: string) {
   const date = new Date(value);
-  const now = new Date("2026-08-08T12:00:00+08:00");
+  if (Number.isNaN(date.getTime())) return "未知时间";
+  const now = new Date();
   const days = Math.floor((now.getTime() - date.getTime()) / 86400000);
   if (days <= 0) return "今天";
   if (days === 1) return "昨天";
   if (days < 7) return `${days} 天前`;
   return `${date.getMonth() + 1} 月 ${date.getDate()} 日`;
+}
+
+function formatDateTime(value: string) {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return value;
+  return date.toLocaleString("zh-CN", { month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" });
 }
 
 function fileBaseName(name: string) {
@@ -101,12 +109,89 @@ function parseTagsInput(value: string) {
   ));
 }
 
+function revokeObjectUrl(image?: string) {
+  if (image?.startsWith("blob:")) URL.revokeObjectURL(image);
+}
+
+type CardItemProps = {
+  card: CharacterCard;
+  selected: boolean;
+  bulkSelected: boolean;
+  onOpen: (id: string) => void;
+  onToggleBulk: (id: string) => void;
+  onUpdate: (id: string, patch: Partial<CharacterCard>) => void;
+  onCardMenu: (event: ReactMouseEvent<HTMLElement>, id: string) => void;
+};
+
+const CharacterCardItem = memo(function CharacterCardItem({
+  card, selected, bulkSelected, onOpen, onToggleBulk, onUpdate, onCardMenu,
+}: CardItemProps) {
+  function handleKey(event: ReactKeyboardEvent<HTMLElement>) {
+    if (event.key === "Enter" || event.key === " ") {
+      event.preventDefault();
+      onOpen(card.id);
+    }
+  }
+
+  return (
+    <article
+      className={`character-card ${selected ? "selected" : ""} ${bulkSelected ? "bulk-selected" : ""}`}
+      tabIndex={0}
+      role="button"
+      aria-label={card.name}
+      onClick={() => onOpen(card.id)}
+      onKeyDown={handleKey}
+      onContextMenu={(event) => onCardMenu(event, card.id)}
+    >
+      <button
+        className={`card-check ${bulkSelected ? "checked" : ""}`}
+        aria-label={bulkSelected ? `取消选择${card.name}` : `选择${card.name}`}
+        onClick={(event) => { event.stopPropagation(); onToggleBulk(card.id); }}
+      >
+        <i>{bulkSelected ? "✓" : ""}</i>
+      </button>
+      <div className="card-art" style={{ "--card-accent": card.accent ?? "#7158c9" } as React.CSSProperties}>
+        {card.image ? <img src={card.image} alt="" loading="lazy" decoding="async" /> : <span className="initials">{initials(card.name)}</span>}
+        <span className="format-badge">{card.fileType.includes("json") ? "JSON" : card.fileType.includes("webp") ? "WEBP" : "PNG"}</span>
+        <button
+          className={`card-favorite ${card.favorite ? "active" : ""}`}
+          aria-label={card.favorite ? `取消收藏${card.name}` : `收藏${card.name}`}
+          aria-pressed={card.favorite === true}
+          onClick={(event) => { event.stopPropagation(); onUpdate(card.id, { favorite: !card.favorite }); }}
+        >{card.favorite ? "♥" : "♡"}</button>
+        <button
+          className="card-menu"
+          aria-label={`${card.name}更多操作`}
+          onClick={(event) => { event.stopPropagation(); onCardMenu(event, card.id); }}
+        >•••</button>
+        <div className="art-fade" />
+        <div className="card-rating" aria-label={`${card.rating}星`}>
+          {[1, 2, 3, 4, 5].map((star) => (
+            <button
+              key={star}
+              className={star <= card.rating ? "filled" : ""}
+              aria-label={`设为${star}星`}
+              aria-pressed={card.rating === star}
+              onClick={(event) => { event.stopPropagation(); onUpdate(card.id, { rating: card.rating === star ? 0 : star }); }}
+            >★</button>
+          ))}
+        </div>
+      </div>
+      <div className="card-info">
+        <h2>{card.name}</h2>
+        <p>{card.tags.length ? card.tags.slice(0, 2).map((tag) => `#${tag}`).join("  ") : "等待添加标签"}</p>
+        <div className="card-meta"><span>{formatBytes(card.size)}</span><i /> <span>{formatDate(card.modifiedAt)}</span></div>
+      </div>
+    </article>
+  );
+});
+
 export default function CharacterManager() {
   const [cards, setCards] = useState<CharacterCard[]>([]);
   const [selectedId, setSelectedId] = useState("");
   const [query, setQuery] = useState("");
   const [debouncedQuery, setDebouncedQuery] = useState("");
-  const [activeShelf, setActiveShelf] = useState("收藏夹");
+  const [activeShelf, setActiveShelf] = useState("全部角色");
   const [activeTags, setActiveTags] = useState<string[]>([]);
   const [activeRating, setActiveRating] = useState("all");
   const [activeType, setActiveType] = useState("all");
@@ -115,7 +200,7 @@ export default function CharacterManager() {
   const [detailOpen, setDetailOpen] = useState(true);
   const [dragging, setDragging] = useState(false);
   const [importing, setImporting] = useState(false);
-  const [toast, setToast] = useState("");
+  const [toast, setToastState] = useState<{ text: string; kind: "success" | "error" } | null>(null);
   const [newShelfOpen, setNewShelfOpen] = useState(false);
   const [newShelfName, setNewShelfName] = useState("");
   const [customShelves, setCustomShelves] = useState<string[]>([]);
@@ -123,18 +208,90 @@ export default function CharacterManager() {
   const [tagPickerOpen, setTagPickerOpen] = useState(false);
   const [tagSearch, setTagSearch] = useState("");
   const [isDesktop, setIsDesktop] = useState(false);
-  const theme = useSyncExternalStore(subscribeTheme, readTheme, () => "dark" as ThemeName);
   const [tavernPanelOpen, setTavernPanelOpen] = useState(false);
   const [tavernProgress, setTavernProgress] = useState<TavernLaunchProgress>(initialTavernProgress);
   const [bulkSelected, setBulkSelected] = useState<Set<string>>(new Set());
-  const [bulkModal, setBulkModal] = useState<null | "tag" | "shelf" | "rating" | "delete">(null);
+  const [bulkModal, setBulkModal] = useState<null | "tag" | "shelf" | "rating" | "delete" | "export">(null);
   const [bulkTagDraft, setBulkTagDraft] = useState("");
   const [bulkShelf, setBulkShelf] = useState("未分类");
   const [bulkRating, setBulkRating] = useState(0);
   const [hydratingAll, setHydratingAll] = useState(false);
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const [unsavedIds, setUnsavedIds] = useState<Set<string>>(new Set());
+  const [topMenuOpen, setTopMenuOpen] = useState(false);
+  const [cardMenu, setCardMenu] = useState<{ id: string; x: number; y: number } | null>(null);
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  const [backupsOpen, setBackupsOpen] = useState(false);
+  const [aboutOpen, setAboutOpen] = useState(false);
+  const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
+  const [settings, setSettings] = useState<DesktopSettings | null>(null);
+  const [backups, setBackups] = useState<DesktopBackup[] | null>(null);
+  const [updateStatus, setUpdateStatus] = useState<DesktopUpdateStatus | null>(null);
+  const [updateChecking, setUpdateChecking] = useState(false);
+  const theme = useSyncExternalStore(subscribeTheme, readTheme, () => "dark" as ThemeName);
   const folderInputRef = useRef<HTMLInputElement>(null);
+  const searchInputRef = useRef<HTMLInputElement>(null);
   const pendingUpdatesRef = useRef<Map<string, { timer: number; patch: Partial<CharacterCard> }>>(new Map());
+  const pendingFilesRef = useRef<Map<string, File>>(new Map());
   const dragDepthRef = useRef(0);
+
+  const showToast = useCallback((text: string, kind: "success" | "error" = "success") => {
+    setToastState({ text, kind });
+  }, []);
+
+  const loadCards = useCallback(async () => {
+    setLoadError(null);
+    if (window.desktopAPI) {
+      try {
+        const stored = await window.desktopAPI.listCards();
+        setCards(stored);
+      } catch {
+        setLoadError("读取本地卡库失败");
+      }
+      return;
+    }
+    try {
+      const response = await fetch("/api/cards");
+      const data = await response.json() as { cards?: CharacterCard[]; error?: string };
+      if (!response.ok || data.error) throw new Error(data.error || "读取失败");
+      setCards(data.cards ?? []);
+    } catch (error) {
+      setLoadError(error instanceof Error ? error.message : "读取失败");
+    }
+  }, []);
+
+  const refreshSettings = useCallback(async () => {
+    if (!window.desktopAPI) return null;
+    try {
+      const next = await window.desktopAPI.getSettings();
+      setSettings(next);
+      return next;
+    } catch {
+      return null;
+    }
+  }, []);
+
+  useEffect(() => {
+    if (window.desktopAPI) {
+      setIsDesktop(true);
+    }
+    void loadCards();
+    if (window.desktopAPI) {
+      window.desktopAPI.getTavernStatus().then(setTavernProgress).catch(() => undefined);
+      void refreshSettings();
+      return window.desktopAPI.onTavernProgress(setTavernProgress);
+    }
+    return undefined;
+  }, [loadCards, refreshSettings]);
+
+  useEffect(() => {
+    if (!window.desktopAPI?.onUpdateStatus) return undefined;
+    return window.desktopAPI.onUpdateStatus((status) => {
+      setUpdateStatus(status);
+      if (status.event === "available") showToast(`发现新版本 v${status.version ?? ""}，正在后台下载…`);
+      if (status.event === "downloaded") showToast(`新版本 v${status.version ?? ""} 已就绪，重启后生效`);
+    });
+  }, [showToast]);
 
   useEffect(() => {
     const stored = window.localStorage.getItem(THEME_STORAGE_KEY);
@@ -142,25 +299,8 @@ export default function CharacterManager() {
   }, []);
 
   useEffect(() => {
-    if (window.desktopAPI) {
-      setIsDesktop(true);
-      window.desktopAPI.listCards()
-        .then((storedCards) => setCards(storedCards as CharacterCard[]))
-        .catch(() => setToast("读取本地角色卡失败"));
-      window.desktopAPI.getTavernStatus().then(setTavernProgress).catch(() => undefined);
-      return window.desktopAPI.onTavernProgress(setTavernProgress);
-    }
-    fetch("/api/cards")
-      .then((response) => response.json() as Promise<{ cards?: CharacterCard[] }>)
-      .then((data) => {
-        if (data.cards?.length) setCards((current) => [...current, ...data.cards!]);
-      })
-      .catch(() => undefined);
-  }, []);
-
-  useEffect(() => {
     if (!toast) return;
-    const timer = window.setTimeout(() => setToast(""), 2800);
+    const timer = window.setTimeout(() => setToastState(null), 3200);
     return () => window.clearTimeout(timer);
   }, [toast]);
 
@@ -199,11 +339,8 @@ export default function CharacterManager() {
     return allTags.filter(([tag]) => tag.toLocaleLowerCase("zh-CN").includes(lowered));
   }, [allTags, tagSearch]);
 
-  function toggleTag(tag: string) {
-    setActiveTags((current) => current.includes(tag)
-      ? current.filter((item) => item !== tag)
-      : [...current, tag]);
-  }
+  const totalSize = useMemo(() => cards.reduce((sum, card) => sum + (card.size || 0), 0), [cards]);
+  const latestModified = useMemo(() => cards.reduce<string>((latest, card) => card.modifiedAt > latest ? card.modifiedAt : latest, ""), [cards]);
 
   const filteredCards = useMemo(() => {
     const lowered = debouncedQuery.trim().toLocaleLowerCase("zh-CN");
@@ -239,32 +376,75 @@ export default function CharacterManager() {
     });
   }, [activeShelf, activeTags, activeRating, activeType, cards, debouncedQuery, sortMode]);
 
+  const filteredRef = useRef(filteredCards);
+  const draggingRef = useRef(dragging);
+  useEffect(() => {
+    filteredRef.current = filteredCards;
+    draggingRef.current = dragging;
+  });
+
+  const closeTopModal = useCallback((): boolean => {
+    let closed = true;
+    setBulkModal((current) => {
+      if (current) return null;
+      closed = false;
+      return current;
+    });
+    if (!closed) return true;
+    if (confirmDeleteId) { setConfirmDeleteId(null); return true; }
+    if (settingsOpen) { setSettingsOpen(false); return true; }
+    if (backupsOpen) { setBackupsOpen(false); return true; }
+    if (aboutOpen) { setAboutOpen(false); return true; }
+    if (newShelfOpen) { setNewShelfOpen(false); return true; }
+    if (tavernPanelOpen) { setTavernPanelOpen(false); return true; }
+    if (tagPickerOpen) { setTagPickerOpen(false); return true; }
+    return false;
+  }, [aboutOpen, backupsOpen, confirmDeleteId, newShelfOpen, settingsOpen, tagPickerOpen, tavernPanelOpen]);
+
+  const closeTopModalRef = useRef(closeTopModal);
+  useEffect(() => {
+    closeTopModalRef.current = closeTopModal;
+  });
+
   useEffect(() => {
     function onKeyDown(event: globalThis.KeyboardEvent) {
+      if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "k") {
+        event.preventDefault();
+        searchInputRef.current?.focus();
+        searchInputRef.current?.select();
+        return;
+      }
+      if (event.key === "Escape") {
+        setCardMenu(null);
+        setTopMenuOpen(false);
+        if (closeTopModalRef.current()) return;
+        setBulkSelected((current) => (current.size ? new Set() : current));
+        if (draggingRef.current) {
+          dragDepthRef.current = 0;
+          setDragging(false);
+        }
+        return;
+      }
       const target = event.target as HTMLElement | null;
       if (target && ["INPUT", "TEXTAREA", "SELECT"].includes(target.tagName)) return;
       if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "a") {
         event.preventDefault();
-        setBulkSelected(new Set(filteredCards.map((card) => card.id)));
+        setBulkSelected(new Set(filteredRef.current.map((card) => card.id)));
       }
-      if (event.key === "Escape" && bulkSelected.size) {
-        setBulkSelected(new Set());
-        setBulkModal(null);
-      }
-      if (event.key === "Escape" && dragging) setDragging(false);
     }
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [bulkSelected.size, dragging, filteredCards]);
+  }, []);
 
-  async function updateCard(id: string, patch: Partial<CharacterCard>) {
+  const updateCard = useCallback(async (id: string, patch: Partial<CharacterCard>) => {
     setCards((current) => current.map((card) => card.id === id ? { ...card, ...patch, modifiedAt: new Date().toISOString() } : card));
+    if (id.startsWith("local-")) return;
     const persisted: Partial<CharacterCard> = {};
     for (const [key, value] of Object.entries(patch)) {
       if ([
-      "name", "rating", "favorite", "tags", "bookshelf", "description", "personality", "scenario",
-      "firstMessage", "exampleDialogue", "creatorNotes", "systemPrompt",
-      "postHistoryInstructions", "alternateGreetings", "creator", "characterVersion",
+        "name", "rating", "favorite", "tags", "bookshelf", "description", "personality", "scenario",
+        "firstMessage", "exampleDialogue", "creatorNotes", "systemPrompt",
+        "postHistoryInstructions", "alternateGreetings", "creator", "characterVersion",
       ].includes(key)) {
         (persisted as Record<string, unknown>)[key] = value;
       }
@@ -278,28 +458,86 @@ export default function CharacterManager() {
         timer: window.setTimeout(() => {
           pendingUpdatesRef.current.delete(id);
           const patchToSave = { ...mergedPatch };
-          save(patchToSave).catch(() => setToast("保存更改失败"));
+          save(patchToSave).catch(() => showToast("保存更改失败", "error"));
         }, 320),
         patch: mergedPatch,
       });
     };
     if (window.desktopAPI) {
-      if (id.startsWith("local-")) return;
       scheduleSave((merged) => window.desktopAPI!.updateCard(id, merged));
       return;
     }
-    if (id.startsWith("local-")) return;
     scheduleSave((merged) => fetch(`/api/cards/${id}`, {
       method: "PATCH",
       headers: { "content-type": "application/json" },
       body: JSON.stringify(merged),
     }));
+  }, [showToast]);
+
+  const handleUpdate = useCallback((id: string, patch: Partial<CharacterCard>) => {
+    void updateCard(id, patch);
+  }, [updateCard]);
+
+  const toggleBulk = useCallback((id: string) => {
+    setBulkSelected((current) => {
+      const next = new Set(current);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  }, []);
+
+  const openDetails = useCallback((id: string) => {
+    setSelectedId(id);
+    setDetailOpen(true);
+    setTagDraft("");
+    if (window.desktopAPI) {
+      window.desktopAPI.hydrateCard(id)
+        .then((hydrated) => {
+          if (!hydrated) return;
+          setCards((current) => current.map((card) => card.id === hydrated.id ? { ...card, ...hydrated } : card));
+        })
+        .catch(() => undefined);
+    }
+  }, []);
+
+  const openCardMenu = useCallback((event: ReactMouseEvent<HTMLElement>, id: string) => {
+    event.preventDefault();
+    event.stopPropagation();
+    setCardMenu({
+      id,
+      x: Math.min(event.clientX, window.innerWidth - 200),
+      y: Math.min(event.clientY, window.innerHeight - 170),
+    });
+  }, []);
+
+  function toggleTag(tag: string) {
+    setActiveTags((current) => current.includes(tag)
+      ? current.filter((item) => item !== tag)
+      : [...current, tag]);
+  }
+
+  function postCardFile(file: File, card: CharacterCard) {
+    const form = new FormData();
+    form.set("file", file);
+    form.set("name", card.name);
+    form.set("fileName", card.fileName);
+    form.set("fileType", card.fileType);
+    form.set("sourcePath", card.sourcePath);
+    form.set("bookshelf", card.bookshelf || "未分类");
+    return fetch("/api/cards", { method: "POST", body: form })
+      .then(async (response) => {
+        if (!response.ok) throw new Error("上传失败");
+        const result = await response.json() as { card: CharacterCard | null };
+        if (!result.card) throw new Error("上传失败");
+        return result.card;
+      });
   }
 
   async function importFiles(fileList: FileList | File[]) {
     const accepted = Array.from(fileList).filter((file) => /\.(png|webp|json)$/i.test(file.name));
     if (!accepted.length) {
-      setToast("请选择 PNG、WEBP 或 JSON 角色卡");
+      showToast("请选择 PNG、WEBP 或 JSON 角色卡", "error");
       return;
     }
     setImporting(true);
@@ -318,21 +556,25 @@ export default function CharacterManager() {
           }
           entries.push({ file, suggestedName: parsedName, sourcePath: file.webkitRelativePath || file.name });
         }
-        const imported = await window.desktopAPI.importCards(entries) as CharacterCard[];
-        if (!imported.length) throw new Error("没有可导入的文件");
-        setCards((current) => [...imported, ...current]);
-        setSelectedId(imported[0].id);
+        const result = await window.desktopAPI.importCards(entries);
+        if (!result.cards.length) throw new Error("没有可导入的文件");
+        setCards((current) => [...result.cards, ...current]);
+        setSelectedId(result.cards[0].id);
         setDetailOpen(true);
         setActiveShelf("全部角色");
-        setToast(`已导入 ${imported.length} 张角色卡`);
-      } catch {
-        setToast("导入失败，请确认文件仍然存在");
+        const parts = [`已导入 ${result.cards.length} 张角色卡`];
+        if (result.duplicates) parts.push(`跳过 ${result.duplicates} 张重复`);
+        if (result.skipped) parts.push(`${result.skipped} 张读取失败`);
+        showToast(parts.join("，"));
+      } catch (error) {
+        showToast(error instanceof Error && error.message === "没有可导入的文件" ? "没有可导入的文件（可能都是重复卡）" : "导入失败，请确认文件仍然存在", "error");
       } finally {
         setImporting(false);
       }
       return;
     }
     let added = 0;
+    let failed = 0;
     for (const file of accepted) {
       let parsedName = fileBaseName(file.name);
       if (/\.json$/i.test(file.name)) {
@@ -367,32 +609,53 @@ export default function CharacterManager() {
       added += 1;
 
       try {
-        const form = new FormData();
-        form.set("file", file);
-        form.set("name", parsedName);
-        form.set("fileName", file.name);
-        form.set("fileType", localCard.fileType);
-        form.set("sourcePath", localCard.sourcePath);
-        form.set("bookshelf", "未分类");
-        const response = await fetch("/api/cards", { method: "POST", body: form });
-        if (!response.ok) throw new Error("upload failed");
-        const result = await response.json() as { card: CharacterCard | null };
-        if (result.card) {
-          setCards((current) => current.map((card) => card.id === localId ? result.card! : card));
-          setSelectedId((current) => current === localId ? result.card!.id : current);
-        }
+        const saved = await postCardFile(file, localCard);
+        revokeObjectUrl(localCard.image);
+        setCards((current) => current.map((card) => card.id === localId ? saved : card));
+        setSelectedId((current) => current === localId ? saved.id : current);
       } catch {
-        // The optimistic card stays usable if remote persistence is unavailable.
+        failed += 1;
+        pendingFilesRef.current.set(localId, file);
+        setUnsavedIds((current) => new Set(current).add(localId));
       }
     }
     setImporting(false);
     setActiveShelf("全部角色");
-    setToast(`已导入 ${added} 张角色卡`);
+    if (failed) {
+      showToast(`已导入 ${added - failed} 张，${failed} 张保存失败（已标记为未保存，可在详情面板重试）`, "error");
+    } else {
+      showToast(`已导入 ${added} 张角色卡`);
+    }
+  }
+
+  async function retrySave(id: string) {
+    const file = pendingFilesRef.current.get(id);
+    const card = cards.find((item) => item.id === id);
+    if (!file || !card) return;
+    try {
+      const saved = await postCardFile(file, card);
+      revokeObjectUrl(card.image);
+      setCards((current) => current.map((item) => item.id === id ? saved : item));
+      setSelectedId((current) => current === id ? saved.id : current);
+      pendingFilesRef.current.delete(id);
+      setUnsavedIds((current) => {
+        const next = new Set(current);
+        next.delete(id);
+        return next;
+      });
+      showToast("角色卡已保存到云端");
+    } catch {
+      showToast("重试保存失败，请检查网络后再试", "error");
+    }
   }
 
   function onFileChange(event: ChangeEvent<HTMLInputElement>) {
     if (event.target.files) void importFiles(event.target.files);
     event.target.value = "";
+  }
+
+  function onRootDragEnter(event: DragEvent<HTMLElement>) {
+    if (Array.from(event.dataTransfer.types).includes("Files")) setDragging(true);
   }
 
   function onDrop(event: DragEvent<HTMLElement>) {
@@ -402,27 +665,6 @@ export default function CharacterManager() {
     if (event.dataTransfer.files.length) void importFiles(event.dataTransfer.files);
   }
 
-  function openDetails(id: string) {
-    setSelectedId(id);
-    setDetailOpen(true);
-    setTagDraft("");
-    if (window.desktopAPI) {
-      window.desktopAPI.hydrateCard(id)
-        .then((hydrated) => {
-          if (!hydrated) return;
-          setCards((current) => current.map((card) => card.id === hydrated.id ? { ...card, ...hydrated } : card));
-        })
-        .catch(() => undefined);
-    }
-  }
-
-  function handleCardKey(event: KeyboardEvent<HTMLElement>, id: string) {
-    if (event.key === "Enter" || event.key === " ") {
-      event.preventDefault();
-      openDetails(id);
-    }
-  }
-
   function addTag() {
     const tags = parseTagsInput(tagDraft);
     if (!selected || !tags.length) return;
@@ -430,7 +672,7 @@ export default function CharacterManager() {
     if (merged.length === selected.tags.length) return;
     void updateCard(selected.id, { tags: merged });
     setTagDraft("");
-    setToast(`已添加 ${tags.length} 个标签`);
+    showToast(`已添加 ${tags.length} 个标签`);
   }
 
   function createShelf() {
@@ -440,7 +682,71 @@ export default function CharacterManager() {
     setActiveShelf(value);
     setNewShelfName("");
     setNewShelfOpen(false);
-    setToast(`已创建书架「${value}」`);
+    showToast(`已创建书架「${value}」`);
+  }
+
+  function deleteCard(id: string) {
+    const card = cards.find((item) => item.id === id);
+    if (!card) return;
+    if (window.desktopAPI) {
+      window.desktopAPI.deleteCards([id]).catch(() => showToast("删除失败", "error"));
+    } else if (!id.startsWith("local-")) {
+      fetch(`/api/cards/${id}`, { method: "DELETE" }).catch(() => undefined);
+    }
+    revokeObjectUrl(card.image);
+    pendingFilesRef.current.delete(id);
+    setUnsavedIds((current) => {
+      const next = new Set(current);
+      next.delete(id);
+      return next;
+    });
+    setCards((current) => current.filter((item) => item.id !== id));
+    if (selectedId === id) setSelectedId("");
+    setConfirmDeleteId(null);
+    setCardMenu(null);
+    showToast("已删除角色卡");
+  }
+
+  function exportCard(id: string) {
+    const card = cards.find((item) => item.id === id);
+    if (!card) return;
+    if (window.desktopAPI) {
+      window.desktopAPI.exportCard(id)
+        .then((result) => {
+          if (result.ok) showToast(`已导出到 ${result.path}`);
+          else if (!result.canceled) showToast(result.error || "导出失败", "error");
+        })
+        .catch(() => showToast("导出失败", "error"));
+      return;
+    }
+    const anchor = window.document.createElement("a");
+    anchor.href = card.image
+      ? `/api/cards/file/${id}?download=1`
+      : `/api/cards/file/${id}?format=json&download=1`;
+    anchor.rel = "noopener";
+    window.document.body.appendChild(anchor);
+    anchor.click();
+    anchor.remove();
+    showToast("已开始下载角色卡文件");
+  }
+
+  function exportSelected() {
+    if (!window.desktopAPI || !bulkSelected.size) return;
+    const ids = [...bulkSelected];
+    window.desktopAPI.exportCards(ids)
+      .then((result) => {
+        if (!result.ok && !result.canceled) {
+          showToast(result.error || "批量导出失败", "error");
+          return;
+        }
+        if (result.ok) {
+          const parts = [`已导出 ${result.exported} 张到 ${result.dir}`];
+          if (result.failed) parts.push(`${result.failed} 张失败`);
+          showToast(parts.join("，"));
+          clearBulk();
+        }
+      })
+      .catch(() => showToast("批量导出失败", "error"));
   }
 
   async function launchTavern() {
@@ -460,26 +766,102 @@ export default function CharacterManager() {
     try {
       const result = await window.desktopAPI.hydrateAllCards();
       const stored = await window.desktopAPI.listCards();
-      setCards(stored as CharacterCard[]);
-      setToast(result.hydrated > 0 ? `已补读 ${result.hydrated} 张角色卡的角色信息` : "没有需要补读的旧卡");
+      setCards(stored);
+      showToast(result.hydrated > 0 ? `已补读 ${result.hydrated} 张角色卡的角色信息` : "没有需要补读的旧卡");
     } catch {
-      setToast("补读失败，请重试");
+      showToast("补读失败，请重试", "error");
     } finally {
       setHydratingAll(false);
     }
   }
 
+  async function pickTavernDir() {
+    if (!window.desktopAPI) return;
+    try {
+      const dir = await window.desktopAPI.pickDirectory();
+      if (!dir) return;
+      const result = await window.desktopAPI.setSettings({ sillyTavernDir: dir });
+      if (!result.ok) {
+        showToast(result.error || "设置目录失败", "error");
+        return;
+      }
+      await refreshSettings();
+      setTavernProgress((current) => ({ ...current, phase: "idle", progress: 0, message: "酒馆目录已更新", detail: `等待启动 ${result.sillyTavernDir}` }));
+      showToast("已更新酒馆目录");
+    } catch {
+      showToast("选择目录失败", "error");
+    }
+  }
+
+  async function openSettingsModal(checkUpdate = false) {
+    await refreshSettings();
+    setSettingsOpen(true);
+    if (checkUpdate) void checkForUpdates();
+  }
+
+  async function openBackupsModal() {
+    if (!window.desktopAPI) return;
+    try {
+      setBackups(await window.desktopAPI.listBackups());
+    } catch {
+      setBackups([]);
+    }
+    setBackupsOpen(true);
+  }
+
+  async function createBackupNow() {
+    if (!window.desktopAPI) return;
+    try {
+      const result = await window.desktopAPI.createBackup();
+      if (!result.ok) throw new Error();
+      setBackups(await window.desktopAPI.listBackups());
+      showToast("已创建备份");
+    } catch {
+      showToast("创建备份失败", "error");
+    }
+  }
+
+  async function restoreBackup(name: string) {
+    if (!window.desktopAPI) return;
+    try {
+      const result = await window.desktopAPI.restoreBackup(name);
+      if (!result.ok) throw new Error(result.error || "恢复失败");
+      setCards(result.cards ?? []);
+      setSelectedId("");
+      setBackups(await window.desktopAPI.listBackups());
+      setBackupsOpen(false);
+      showToast(`已恢复备份（${(result.cards ?? []).length} 张角色卡），恢复前的数据已另存为备份`);
+    } catch (error) {
+      showToast(error instanceof Error ? error.message : "恢复备份失败", "error");
+    }
+  }
+
+  async function checkForUpdates() {
+    if (!window.desktopAPI || updateChecking) return;
+    setUpdateChecking(true);
+    try {
+      const result = await window.desktopAPI.checkForUpdates();
+      if (!result.ok) {
+        setUpdateStatus({ event: "error", message: result.error });
+      } else if (result.version) {
+        setUpdateStatus({ event: "available", version: result.version });
+      }
+    } finally {
+      setUpdateChecking(false);
+    }
+  }
+
+  function installUpdate() {
+    if (!window.desktopAPI) return;
+    window.desktopAPI.installUpdate().catch(() => undefined);
+  }
+
+  function refreshCards() {
+    void loadCards().then(() => showToast("卡库已刷新"));
+  }
+
   const bulkCards = cards.filter((card) => bulkSelected.has(card.id));
   const allVisibleSelected = filteredCards.length > 0 && filteredCards.every((card) => bulkSelected.has(card.id));
-
-  function toggleBulk(id: string) {
-    setBulkSelected((current) => {
-      const next = new Set(current);
-      if (next.has(id)) next.delete(id);
-      else next.add(id);
-      return next;
-    });
-  }
 
   function toggleAllVisible() {
     setBulkSelected((current) => {
@@ -503,14 +885,14 @@ export default function CharacterManager() {
     const ids = bulkCards.map((card) => card.id);
     if (window.desktopAPI) {
       window.desktopAPI.updateCards(ids, { bookshelf: bulkShelf })
-        .catch(() => setToast("批量移动书架失败"));
+        .catch(() => showToast("批量移动书架失败", "error"));
     } else {
       for (const card of bulkCards) {
         if (!card.id.startsWith("local-")) void updateCard(card.id, { bookshelf: bulkShelf });
       }
     }
     setCards((current) => current.map((card) => bulkSelected.has(card.id) ? { ...card, bookshelf: bulkShelf, modifiedAt: new Date().toISOString() } : card));
-    setToast(`已将 ${bulkCards.length} 张角色卡移入「${bulkShelf}」`);
+    showToast(`已将 ${bulkCards.length} 张角色卡移入「${bulkShelf}」`);
     clearBulk();
   }
 
@@ -519,31 +901,30 @@ export default function CharacterManager() {
     const ids = bulkCards.map((card) => card.id);
     if (window.desktopAPI) {
       window.desktopAPI.updateCards(ids, { rating: bulkRating })
-        .catch(() => setToast("批量评分失败"));
+        .catch(() => showToast("批量评分失败", "error"));
     } else {
       for (const card of bulkCards) {
         if (!card.id.startsWith("local-")) void updateCard(card.id, { rating: bulkRating });
       }
     }
     setCards((current) => current.map((card) => bulkSelected.has(card.id) ? { ...card, rating: bulkRating, modifiedAt: new Date().toISOString() } : card));
-    setToast(`已为 ${bulkCards.length} 张角色卡评分`);
+    showToast(`已为 ${bulkCards.length} 张角色卡评分`);
     clearBulk();
   }
 
   async function applyBulkTag() {
     const values = parseTagsInput(bulkTagDraft);
     if (!bulkCards.length || !values.length) return;
-    const realCards = bulkCards;
     if (window.desktopAPI) {
       try {
-        await Promise.all(realCards.map((card) => {
+        await Promise.all(bulkCards.map((card) => {
           const merged = Array.from(new Set([...card.tags, ...values]));
           return merged.length === card.tags.length
             ? Promise.resolve(0)
             : window.desktopAPI!.updateCard(card.id, { tags: merged });
         }));
       } catch {
-        setToast("批量添加标签失败");
+        showToast("批量添加标签失败", "error");
         return;
       }
     } else {
@@ -559,7 +940,7 @@ export default function CharacterManager() {
       const merged = Array.from(new Set([...card.tags, ...values]));
       return merged.length === card.tags.length ? card : { ...card, tags: merged, modifiedAt: new Date().toISOString() };
     }));
-    setToast(`已为 ${bulkCards.length} 张角色卡添加 ${values.length} 个标签`);
+    showToast(`已为 ${bulkCards.length} 张角色卡添加 ${values.length} 个标签`);
     clearBulk();
   }
 
@@ -568,7 +949,7 @@ export default function CharacterManager() {
     const ids = bulkCards.map((card) => card.id);
     if (window.desktopAPI) {
       window.desktopAPI.deleteCards(ids)
-        .catch(() => setToast("批量删除失败"));
+        .catch(() => showToast("批量删除失败", "error"));
     } else {
       for (const card of bulkCards) {
         if (!card.id.startsWith("local-")) {
@@ -576,17 +957,34 @@ export default function CharacterManager() {
         }
       }
     }
+    for (const card of bulkCards) {
+      revokeObjectUrl(card.image);
+      pendingFilesRef.current.delete(card.id);
+    }
+    setUnsavedIds((current) => {
+      const next = new Set(current);
+      for (const id of ids) next.delete(id);
+      return next;
+    });
     setCards((current) => current.filter((card) => !bulkSelected.has(card.id)));
     if (selectedId && bulkSelected.has(selectedId)) {
       const remaining = cards.find((card) => !bulkSelected.has(card.id));
       setSelectedId(remaining?.id ?? "");
     }
-    setToast(`已删除 ${bulkCards.length} 张角色卡`);
+    showToast(`已删除 ${bulkCards.length} 张角色卡`);
     clearBulk();
   }
 
+  const confirmDeleteCard = confirmDeleteId ? cards.find((card) => card.id === confirmDeleteId) : null;
+  const themeMeta = THEMES.find((item) => item.id === theme);
+
   return (
-    <div className="vault-app">
+    <div
+      className="vault-app"
+      onDragEnter={onRootDragEnter}
+      onDragOver={(event) => event.preventDefault()}
+      onDrop={onDrop}
+    >
       <aside className="sidebar">
         <div className="brand">
           <span className="brand-mark" aria-hidden="true"><i /><i /><i /></span>
@@ -620,25 +1018,22 @@ export default function CharacterManager() {
         </nav>
 
         <div className="sidebar-bottom">
-          <div className="storage-copy"><span>卡库空间</span><small>本地与云端同步</small></div>
-          <div className="storage-bar"><i style={{ width: `${Math.min(84, 18 + cards.length * 2)}%` }} /></div>
-          <div className="storage-meta"><span>{cards.length} 张角色卡</span><span>自动保存</span></div>
+          <div className="storage-copy"><span>卡库概览</span><small>{isDesktop ? "本机存储 · 自动备份" : "云端存储"}</small></div>
+          <div className="storage-meta"><span>{cards.length} 张角色卡</span><span>共 {formatBytes(totalSize)}</span></div>
         </div>
       </aside>
 
-      <main
-        className={`workspace ${detailOpen && selected ? "with-detail" : ""}`}
-        onDragEnter={(event) => {
-          event.preventDefault();
-          if (Array.from(event.dataTransfer.types).includes("Files")) setDragging(true);
-        }}
-        onDragOver={(event) => event.preventDefault()}
-        onDrop={onDrop}
-      >
+      <main className={`workspace ${detailOpen && selected ? "with-detail" : ""}`}>
         <header className="topbar">
           <label className="search-box">
             <span aria-hidden="true">⌕</span>
-            <input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="搜索角色、标签或文件名…" aria-label="搜索角色卡" />
+            <input
+              ref={searchInputRef}
+              value={query}
+              onChange={(event) => setQuery(event.target.value)}
+              placeholder="搜索角色、标签或文件名…"
+              aria-label="搜索角色卡"
+            />
             <kbd>Ctrl K</kbd>
           </label>
           <div className="top-actions">
@@ -664,13 +1059,32 @@ export default function CharacterManager() {
             <button
               className="theme-toggle"
               onClick={() => applyTheme(theme === "dark" ? "fresh" : "dark")}
-              aria-label={`切换界面主题，当前为${THEMES.find((item) => item.id === theme)?.label}主题`}
+              aria-label={`切换界面主题，当前为${themeMeta?.label}主题`}
               title="切换界面主题"
             >
-              <span aria-hidden="true">{THEMES.find((item) => item.id === theme)?.icon}</span>
-              {THEMES.find((item) => item.id === theme)?.label}
+              <span aria-hidden="true">{themeMeta?.icon}</span>
+              {themeMeta?.label}
             </button>
-            <button className="more-button" aria-label="更多选项">•••</button>
+            <div className="top-menu-wrap">
+              <button
+                className="more-button"
+                aria-label="更多选项"
+                aria-expanded={topMenuOpen}
+                onClick={() => setTopMenuOpen((open) => !open)}
+              >•••</button>
+              {topMenuOpen && (
+                <>
+                  <div className="menu-backdrop" onClick={() => setTopMenuOpen(false)} />
+                  <div className="app-menu" role="menu">
+                    <button role="menuitem" onClick={() => { setTopMenuOpen(false); refreshCards(); }}><span>↻</span>刷新卡库</button>
+                    {isDesktop && <button role="menuitem" onClick={() => { setTopMenuOpen(false); void openSettingsModal(); }}><span>⚙</span>设置</button>}
+                    {isDesktop && <button role="menuitem" onClick={() => { setTopMenuOpen(false); void openBackupsModal(); }}><span>▰</span>备份与恢复</button>}
+                    {isDesktop && <button role="menuitem" onClick={() => { setTopMenuOpen(false); void openSettingsModal(true); }}><span>↑</span>检查更新</button>}
+                    <button role="menuitem" onClick={() => { setTopMenuOpen(false); setAboutOpen(true); }}><span>ℹ</span>关于</button>
+                  </div>
+                </>
+              )}
+            </div>
           </div>
         </header>
 
@@ -679,7 +1093,11 @@ export default function CharacterManager() {
             <div>
               <div className="breadcrumbs"><span>书架</span><b>/</b><span>{activeShelf}</span></div>
               <h1>{activeShelf}</h1>
-              <p>{filteredCards.length} 张角色卡 · 上次整理于今天</p>
+              <p>
+                {filteredCards.length} 张角色卡
+                {latestModified ? ` · 最近修改 ${formatDate(latestModified)}` : ""}
+                {unsavedIds.size ? ` · ${unsavedIds.size} 张未保存` : ""}
+              </p>
             </div>
             <div className="library-summary">
               <span className="summary-stack" aria-hidden="true"><i /><i /><i /></span>
@@ -778,6 +1196,7 @@ export default function CharacterManager() {
                 <button onClick={() => { setBulkTagDraft(""); setBulkModal("tag"); }}><span>#</span>添加标签</button>
                 <button onClick={() => { setBulkShelf("未分类"); setBulkModal("shelf"); }}><span>▰</span>移入书架</button>
                 <button onClick={() => { setBulkRating(0); setBulkModal("rating"); }}><span>★</span>批量评分</button>
+                {isDesktop && <button onClick={exportSelected}><span>⤓</span>导出</button>}
                 <button className="danger" onClick={() => setBulkModal("delete")}><span>×</span>删除</button>
               </div>
               <button className="bulk-clear" onClick={clearBulk}>取消选择</button>
@@ -787,54 +1206,24 @@ export default function CharacterManager() {
           {filteredCards.length ? (
             <div className={view === "grid" ? "character-grid" : "character-list"}>
               {filteredCards.map((card) => (
-                <article
+                <CharacterCardItem
                   key={card.id}
-                  className={`character-card ${selectedId === card.id && detailOpen ? "selected" : ""} ${bulkSelected.has(card.id) ? "bulk-selected" : ""}`}
-                  tabIndex={0}
-                  role="button"
-                  onClick={() => openDetails(card.id)}
-                  onKeyDown={(event) => handleCardKey(event, card.id)}
-                >
-                  <button
-                    className={`card-check ${bulkSelected.has(card.id) ? "checked" : ""}`}
-                    aria-label={bulkSelected.has(card.id) ? `取消选择${card.name}` : `选择${card.name}`}
-                    onClick={(event) => { event.stopPropagation(); toggleBulk(card.id); }}
-                  >
-                    <i>{bulkSelected.has(card.id) ? "✓" : ""}</i>
-                  </button>
-                  <div className="card-art" style={{ "--card-accent": card.accent ?? "#7158c9" } as React.CSSProperties}>
-                    {card.image ? <img src={card.image} alt="" loading="lazy" decoding="async" /> : <span className="initials">{initials(card.name)}</span>}
-                    <span className="format-badge">{card.fileType.includes("json") ? "JSON" : card.fileType.includes("webp") ? "WEBP" : "PNG"}</span>
-                    <button
-                      className={`card-favorite ${card.favorite ? "active" : ""}`}
-                      aria-label={card.favorite ? `取消收藏${card.name}` : `收藏${card.name}`}
-                      aria-pressed={card.favorite === true}
-                      onClick={(event) => { event.stopPropagation(); void updateCard(card.id, { favorite: !card.favorite }); }}
-                    >{card.favorite ? "♥" : "♡"}</button>
-                    <button className="card-menu" aria-label={`${card.name}更多选项`} onClick={(event) => { event.stopPropagation(); openDetails(card.id); }}>•••</button>
-                    <div className="art-fade" />
-                    <div className="card-rating" aria-label={`${card.rating}星`}>
-                      {[1, 2, 3, 4, 5].map((star) => (
-                        <button
-                          key={star}
-                          className={star <= card.rating ? "filled" : ""}
-                          aria-label={`设为${star}星`}
-                          onClick={(event) => { event.stopPropagation(); void updateCard(card.id, { rating: card.rating === star ? 0 : star }); }}
-                        >★</button>
-                      ))}
-                    </div>
-                  </div>
-                  <div className="card-info">
-                    <h2>{card.name}</h2>
-                    <p>{card.tags.length ? card.tags.slice(0, 2).map((tag) => `#${tag}`).join("  ") : "等待添加标签"}</p>
-                    <div className="card-meta"><span>{formatBytes(card.size)}</span><i /> <span>{formatDate(card.modifiedAt)}</span></div>
-                  </div>
-                </article>
+                  card={card}
+                  selected={selectedId === card.id && detailOpen}
+                  bulkSelected={bulkSelected.has(card.id)}
+                  onOpen={openDetails}
+                  onToggleBulk={toggleBulk}
+                  onUpdate={handleUpdate}
+                  onCardMenu={openCardMenu}
+                />
               ))}
             </div>
           ) : (
             <div className="empty-state">
-              <span>◇</span><h2>没有找到角色卡</h2><p>试试更换筛选条件，或导入新的 PNG、WEBP、JSON 角色卡。</p>
+              <span aria-hidden="true">{loadError ? "!" : "◇"}</span>
+              <h2>{loadError ? "卡库读取失败" : "没有找到角色卡"}</h2>
+              <p>{loadError ? `${loadError}，请检查网络或存储后重试。` : "试试更换筛选条件，或导入新的 PNG、WEBP、JSON 角色卡。"}</p>
+              {loadError && <button className="empty-retry" onClick={() => void loadCards()}>重新加载</button>}
             </div>
           )}
         </section>
@@ -848,7 +1237,11 @@ export default function CharacterManager() {
               if (dragDepthRef.current <= 0) { dragDepthRef.current = 0; setDragging(false); }
             }}
           >
-            <button className="drop-close" onClick={() => setDragging(false)} aria-label="关闭导入提示">×</button>
+            <button
+              className="drop-close"
+              onClick={() => { dragDepthRef.current = 0; setDragging(false); }}
+              aria-label="关闭导入提示"
+            >×</button>
             <div><span>＋</span><strong>松开即可导入角色卡</strong><small>支持 PNG、WEBP 与 JSON 文件</small></div>
           </div>
         )}
@@ -857,7 +1250,7 @@ export default function CharacterManager() {
       {detailOpen && selected && (
         <aside className="detail-panel" aria-label="角色卡详情">
           <div className="detail-head">
-            <div><span className="live-dot" /> 角色卡详情</div>
+            <div><span className="live-dot" /> 角色卡详情{unsavedIds.has(selected.id) ? "（未保存）" : ""}</div>
             <button aria-label="关闭详情" onClick={() => setDetailOpen(false)}>×</button>
           </div>
           <div className="detail-scroll">
@@ -980,8 +1373,29 @@ export default function CharacterManager() {
               <div><span>来源</span><strong title={selected.sourcePath}>{selected.sourcePath || "手动导入"}</strong></div>
             </section>
           </div>
-          <div className="detail-footer"><span>所有更改均已自动保存</span><i>✓</i></div>
+          <div className={`detail-footer ${unsavedIds.has(selected.id) ? "unsaved" : ""}`}>
+            {unsavedIds.has(selected.id) ? (
+              <>
+                <span>该卡尚未保存到云端</span>
+                <button className="detail-retry" onClick={() => void retrySave(selected.id)}>重试保存</button>
+              </>
+            ) : (
+              <><span>所有更改均已自动保存</span><i>✓</i></>
+            )}
+            <button className="detail-export" onClick={() => exportCard(selected.id)}><span aria-hidden="true">⤓</span>导出</button>
+          </div>
         </aside>
+      )}
+
+      {cardMenu && (
+        <>
+          <div className="menu-backdrop" onClick={() => setCardMenu(null)} onContextMenu={(event) => { event.preventDefault(); setCardMenu(null); }} />
+          <div className="card-context-menu" role="menu" style={{ left: cardMenu.x, top: cardMenu.y }}>
+            <button role="menuitem" onClick={() => { const id = cardMenu.id; setCardMenu(null); openDetails(id); }}><span>◉</span>查看详情</button>
+            <button role="menuitem" onClick={() => { const id = cardMenu.id; setCardMenu(null); exportCard(id); }}><span>⤓</span>导出</button>
+            <button role="menuitem" className="danger" onClick={() => { const id = cardMenu.id; setCardMenu(null); setConfirmDeleteId(id); }}><span>×</span>删除</button>
+          </div>
+        </>
       )}
 
       {newShelfOpen && (
@@ -1004,7 +1418,7 @@ export default function CharacterManager() {
             <div className="tavern-modal-header">
               <span className={`tavern-emblem phase-${tavernProgress.phase}`}>{tavernProgress.phase === "ready" ? "✓" : "▶"}</span>
               <div>
-                <small>D:\\SillyTavern</small>
+                <small>{settings?.detectedDir || tavernProgress.detail}</small>
                 <h2 id="tavern-launch-title">{tavernProgress.message}</h2>
                 <p>{tavernProgress.detail}</p>
               </div>
@@ -1043,6 +1457,13 @@ export default function CharacterManager() {
                 {tavernProgress.phase === "ready" ? "再次打开" : tavernProgress.phase === "error" ? "重新尝试" : "正在启动"}
               </button>
             </div>
+
+            {tavernProgress.phase === "error" && settings && !settings.dirExists && (
+              <div className="tavern-dir-fix">
+                <span>没有找到酒馆安装目录，换目录了？</span>
+                <button onClick={() => void pickTavernDir()}>选择酒馆目录</button>
+              </div>
+            )}
           </div>
         </div>
       )}
@@ -1105,7 +1526,123 @@ export default function CharacterManager() {
         </div>
       )}
 
-      {toast && <div className="toast"><span>✓</span>{toast}</div>}
+      {confirmDeleteId && confirmDeleteCard && (
+        <div className="modal-backdrop" role="presentation" onMouseDown={() => setConfirmDeleteId(null)}>
+          <div className="shelf-modal delete-modal" role="dialog" aria-modal="true" aria-labelledby="single-delete-title" onMouseDown={(event) => event.stopPropagation()}>
+            <button className="modal-close" onClick={() => setConfirmDeleteId(null)} aria-label="关闭">×</button>
+            <span className="modal-icon danger">×</span>
+            <h2 id="single-delete-title">删除角色卡</h2>
+            <p>确定要删除「{confirmDeleteCard.name}」吗？此操作无法撤销。</p>
+            <div><button className="modal-cancel" onClick={() => setConfirmDeleteId(null)}>取消</button><button className="modal-create delete" onClick={() => deleteCard(confirmDeleteCard.id)}>确认删除</button></div>
+          </div>
+        </div>
+      )}
+
+      {isDesktop && settingsOpen && (
+        <div className="modal-backdrop" role="presentation" onMouseDown={() => setSettingsOpen(false)}>
+          <div className="shelf-modal settings-modal" role="dialog" aria-modal="true" aria-labelledby="settings-title" onMouseDown={(event) => event.stopPropagation()}>
+            <button className="modal-close" onClick={() => setSettingsOpen(false)} aria-label="关闭">×</button>
+            <span className="modal-icon">⚙</span>
+            <h2 id="settings-title">设置</h2>
+
+            <div className="settings-field">
+              <label htmlFor="tavern-dir-input">酒馆安装目录</label>
+              <div className="settings-dir-row">
+                <input id="tavern-dir-input" readOnly value={settings?.detectedDir ?? ""} />
+                <button onClick={() => void pickTavernDir()}>浏览…</button>
+              </div>
+              <p className={`settings-hint ${settings?.dirExists ? "ok" : "warn"}`}>
+                {settings?.dirExists
+                  ? settings?.sillyTavernDir ? "已手动配置，目录有效" : "自动检测到该目录，也可手动指定"
+                  : "目录不存在，请点击「浏览」选择 SillyTavern 安装目录"}
+              </p>
+            </div>
+
+            <div className="settings-field">
+              <label>应用与更新</label>
+              <div className="settings-update">
+                <div className="settings-version">
+                  <strong>酒馆角色卡库 v{settings?.appVersion ?? "-"}</strong>
+                  <span>{settings?.isPortable ? "便携版：请到 GitHub Releases 下载新版" : "安装版：启动时自动检查更新"}</span>
+                </div>
+                <button onClick={() => void checkForUpdates()} disabled={updateChecking}>
+                  {updateChecking ? "正在检查…" : "检查更新"}
+                </button>
+              </div>
+              {updateStatus?.event === "available" && (
+                <div className="update-banner">
+                  <span>发现新版本 v{updateStatus.version ?? ""}，正在后台下载…</span>
+                </div>
+              )}
+              {updateStatus?.event === "progress" && (
+                <div className="update-banner"><span>正在下载更新… {updateStatus.percent}%</span></div>
+              )}
+              {updateStatus?.event === "downloaded" && (
+                <div className="update-banner">
+                  <span>新版本 v{updateStatus.version ?? ""} 已就绪</span>
+                  <button onClick={installUpdate}>立即重启更新</button>
+                </div>
+              )}
+              {updateStatus?.event === "error" && (
+                <div className="update-banner error"><span>{updateStatus.message ?? "检查更新失败"}</span></div>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {isDesktop && backupsOpen && (
+        <div className="modal-backdrop" role="presentation" onMouseDown={() => setBackupsOpen(false)}>
+          <div className="shelf-modal settings-modal" role="dialog" aria-modal="true" aria-labelledby="backups-title" onMouseDown={(event) => event.stopPropagation()}>
+            <button className="modal-close" onClick={() => setBackupsOpen(false)} aria-label="关闭">×</button>
+            <span className="modal-icon">▰</span>
+            <h2 id="backups-title">备份与恢复</h2>
+            <p className="settings-hint">编辑卡库时自动备份，最多保留 5 份。恢复前会先把当前数据另存为备份。</p>
+            {backups?.length ? (
+              <div className="backups-list">
+                {backups.map((backup) => (
+                  <div key={backup.name} className="backup-item">
+                    <div>
+                      <span>{formatDateTime(backup.mtime)}</span>
+                      <small>{backup.cardCount} 张角色卡 · {formatBytes(backup.size)}</small>
+                    </div>
+                    <button onClick={() => void restoreBackup(backup.name)}>恢复</button>
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <div className="backups-empty">还没有备份，保存卡库后会自动生成</div>
+            )}
+            <div className="backups-actions">
+              <button onClick={() => void createBackupNow()}>立即备份</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {aboutOpen && (
+        <div className="modal-backdrop" role="presentation" onMouseDown={() => setAboutOpen(false)}>
+          <div className="shelf-modal settings-modal" role="dialog" aria-modal="true" aria-labelledby="about-title" onMouseDown={(event) => event.stopPropagation()}>
+            <button className="modal-close" onClick={() => setAboutOpen(false)} aria-label="关闭">×</button>
+            <span className="modal-icon">ℹ</span>
+            <h2 id="about-title">关于酒馆角色卡库</h2>
+            <p className="settings-hint">
+              v{settings?.appVersion ?? "0.6.0"} · 中文 SillyTavern 角色卡管理器与一键启动器。
+              支持导入 PNG / WEBP / JSON 角色卡、书架整理、评分标签、启动酒馆、导出与自动备份。
+            </p>
+            <p className="settings-hint">
+              <a href="https://github.com/Sanqianli-24/tavern-vault-character-card-manager" target="_blank" rel="noreferrer">GitHub 仓库与新版下载</a>
+            </p>
+          </div>
+        </div>
+      )}
+
+      {toast && (
+        <div className={`toast ${toast.kind === "error" ? "error" : ""}`} role="status" aria-live="polite">
+          <span aria-hidden="true">{toast.kind === "error" ? "✕" : "✓"}</span>
+          {toast.text}
+        </div>
+      )}
     </div>
   );
 }
