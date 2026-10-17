@@ -1,5 +1,6 @@
 import type { Metadata } from "next";
 import { headers } from "next/headers";
+import { THEMES } from "./themes";
 import "./globals.css";
 
 export async function generateMetadata(): Promise<Metadata> {
@@ -26,6 +27,8 @@ export async function generateMetadata(): Promise<Metadata> {
   };
 }
 
+const THEME_IDS = THEMES.map((theme) => theme.id).join("|");
+
 export default function RootLayout({ children }: Readonly<{ children: React.ReactNode }>) {
   return (
     <html lang="zh-CN">
@@ -33,7 +36,7 @@ export default function RootLayout({ children }: Readonly<{ children: React.Reac
         <script
           dangerouslySetInnerHTML={{
             __html:
-              "try{var t=localStorage.getItem('tavern-vault-theme');if(t==='dark'||t==='fresh')document.documentElement.dataset.theme=t}catch(e){}",
+              `try{var t=localStorage.getItem('tavern-vault-theme');if(t&&/^(?:${THEME_IDS})$/.test(t))document.documentElement.dataset.theme=t}catch(e){}`,
           }}
         />
         {children}

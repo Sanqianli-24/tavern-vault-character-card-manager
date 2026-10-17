@@ -1,6 +1,7 @@
 "use client";
 
 import { memo, useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore, type ChangeEvent, type DragEvent, type KeyboardEvent as ReactKeyboardEvent, type MouseEvent as ReactMouseEvent } from "react";
+import { THEME_STORAGE_KEY, THEMES, isThemeName, themeMeta, type ThemeName } from "./themes";
 
 type CharacterCard = {
   id: string;
@@ -33,18 +34,11 @@ type CharacterCard = {
 
 type SortMode = "explorer" | "name-desc" | "newest" | "oldest" | "rating" | "size";
 
-type ThemeName = "dark" | "fresh";
-
-const THEMES: { id: ThemeName; label: string; icon: string }[] = [
-  { id: "dark", label: "深邃", icon: "◐" },
-  { id: "fresh", label: "清新", icon: "❀" },
-];
-const THEME_STORAGE_KEY = "tavern-vault-theme";
-
 const themeListeners = new Set<() => void>();
 
 function readTheme(): ThemeName {
-  return document.documentElement.dataset.theme === "fresh" ? "fresh" : "dark";
+  const value = document.documentElement.dataset.theme;
+  return isThemeName(value) ? value : "dark";
 }
 
 function applyTheme(next: ThemeName) {
@@ -219,6 +213,7 @@ export default function CharacterManager() {
   const [loadError, setLoadError] = useState<string | null>(null);
   const [unsavedIds, setUnsavedIds] = useState<Set<string>>(new Set());
   const [topMenuOpen, setTopMenuOpen] = useState(false);
+  const [themeMenuOpen, setThemeMenuOpen] = useState(false);
   const [cardMenu, setCardMenu] = useState<{ id: string; x: number; y: number } | null>(null);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [backupsOpen, setBackupsOpen] = useState(false);
@@ -417,6 +412,7 @@ export default function CharacterManager() {
       if (event.key === "Escape") {
         setCardMenu(null);
         setTopMenuOpen(false);
+        setThemeMenuOpen(false);
         if (closeTopModalRef.current()) return;
         setBulkSelected((current) => (current.size ? new Set() : current));
         if (draggingRef.current) {
@@ -976,7 +972,7 @@ export default function CharacterManager() {
   }
 
   const confirmDeleteCard = confirmDeleteId ? cards.find((card) => card.id === confirmDeleteId) : null;
-  const themeMeta = THEMES.find((item) => item.id === theme);
+  const activeTheme = themeMeta(theme);
 
   return (
     <div
@@ -1056,15 +1052,43 @@ export default function CharacterManager() {
               onChange={onFileChange}
               {...({ webkitdirectory: "", directory: "" } as Record<string, string>)}
             />
-            <button
-              className="theme-toggle"
-              onClick={() => applyTheme(theme === "dark" ? "fresh" : "dark")}
-              aria-label={`切换界面主题，当前为${themeMeta?.label}主题`}
-              title="切换界面主题"
-            >
-              <span aria-hidden="true">{themeMeta?.icon}</span>
-              {themeMeta?.label}
-            </button>
+            <div className="top-menu-wrap">
+              <button
+                className="theme-toggle"
+                aria-haspopup="menu"
+                aria-expanded={themeMenuOpen}
+                onClick={() => setThemeMenuOpen((open) => !open)}
+                aria-label={`选择界面主题，当前为${activeTheme?.label}主题`}
+                title="选择界面主题"
+              >
+                <span aria-hidden="true">{activeTheme?.icon}</span>
+                {activeTheme?.label}
+              </button>
+              {themeMenuOpen && (
+                <>
+                  <div className="menu-backdrop" onClick={() => setThemeMenuOpen(false)} />
+                  <div className="app-menu theme-menu" role="menu" aria-label="界面主题">
+                    {THEMES.map((item) => (
+                      <button
+                        key={item.id}
+                        role="menuitemradio"
+                        aria-checked={item.id === theme}
+                        className={item.id === theme ? "active" : ""}
+                        title={item.note}
+                        onClick={() => {
+                          applyTheme(item.id);
+                          setThemeMenuOpen(false);
+                        }}
+                      >
+                        <span className={`theme-swatch swatch-${item.id}`} aria-hidden="true" />
+                        <span className="theme-menu-label">{item.label}</span>
+                        <span className="theme-menu-check" aria-hidden="true">{item.id === theme ? "✓" : ""}</span>
+                      </button>
+                    ))}
+                  </div>
+                </>
+              )}
+            </div>
             <div className="top-menu-wrap">
               <button
                 className="more-button"
