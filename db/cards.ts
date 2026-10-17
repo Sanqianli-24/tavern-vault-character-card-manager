@@ -13,6 +13,29 @@ export function getStorage(): StorageEnv {
   return bindings as StorageEnv;
 }
 
+const CARD_COLUMNS: Array<[name: string, definition: string]> = [
+  ["size", "INTEGER NOT NULL DEFAULT 0"],
+  ["rating", "INTEGER NOT NULL DEFAULT 0"],
+  ["favorite", "INTEGER NOT NULL DEFAULT 0"],
+  ["tags", "TEXT NOT NULL DEFAULT '[]'"],
+  ["bookshelf", "TEXT NOT NULL DEFAULT '未分类'"],
+  ["image_key", "TEXT"],
+  ["description", "TEXT NOT NULL DEFAULT ''"],
+  ["personality", "TEXT NOT NULL DEFAULT ''"],
+  ["scenario", "TEXT NOT NULL DEFAULT ''"],
+  ["first_message", "TEXT NOT NULL DEFAULT ''"],
+  ["example_dialogue", "TEXT NOT NULL DEFAULT ''"],
+  ["creator_notes", "TEXT NOT NULL DEFAULT ''"],
+  ["system_prompt", "TEXT NOT NULL DEFAULT ''"],
+  ["post_history_instructions", "TEXT NOT NULL DEFAULT ''"],
+  ["alternate_greetings", "TEXT NOT NULL DEFAULT '[]'"],
+  ["creator", "TEXT NOT NULL DEFAULT ''"],
+  ["character_version", "TEXT NOT NULL DEFAULT ''"],
+  ["source_path", "TEXT NOT NULL DEFAULT ''"],
+  ["created_at", "TEXT NOT NULL DEFAULT ''"],
+  ["modified_at", "TEXT NOT NULL DEFAULT ''"],
+];
+
 export async function ensureCardsTable(db: D1Database) {
   await db.batch([
     db.prepare(`CREATE TABLE IF NOT EXISTS character_cards (
@@ -44,6 +67,12 @@ export async function ensureCardsTable(db: D1Database) {
     db.prepare("CREATE INDEX IF NOT EXISTS idx_character_cards_modified_at ON character_cards(modified_at)"),
     db.prepare("CREATE INDEX IF NOT EXISTS idx_character_cards_name ON character_cards(name)"),
   ]);
+  const info = await db.prepare("PRAGMA table_info(character_cards)").all<{ name: string }>();
+  const present = new Set((info.results ?? []).map((row) => row.name));
+  const alters = CARD_COLUMNS
+    .filter(([column]) => !present.has(column))
+    .map(([column, definition]) => db.prepare(`ALTER TABLE character_cards ADD COLUMN ${column} ${definition}`));
+  if (alters.length) await db.batch(alters);
 }
 
 export type StoredCardRow = {
@@ -73,19 +102,16 @@ export type StoredCardRow = {
   modified_at: string;
 };
 
+function parseJsonStringArray(value: string): string[] {
+  try {
+    const parsed = JSON.parse(value);
+    return Array.isArray(parsed) ? parsed.filter((item) => typeof item === "string") : [];
+  } catch {
+    return [];
+  }
+}
+
 export function serializeCard(row: StoredCardRow) {
-  let tags: string[] = [];
-  let alternateGreetings: string[] = [];
-  try {
-    tags = JSON.parse(row.tags) as string[];
-  } catch {
-    tags = [];
-  }
-  try {
-    alternateGreetings = JSON.parse(row.alternate_greetings) as string[];
-  } catch {
-    alternateGreetings = [];
-  }
   return {
     id: row.id,
     name: row.name,
@@ -94,7 +120,7 @@ export function serializeCard(row: StoredCardRow) {
     size: row.size,
     rating: row.rating,
     favorite: Boolean(row.favorite),
-    tags,
+    tags: parseJsonStringArray(row.tags),
     bookshelf: row.bookshelf,
     image: row.image_key ? `/api/cards/file/${row.id}` : "",
     description: row.description,
@@ -105,7 +131,7 @@ export function serializeCard(row: StoredCardRow) {
     creatorNotes: row.creator_notes,
     systemPrompt: row.system_prompt,
     postHistoryInstructions: row.post_history_instructions,
-    alternateGreetings,
+    alternateGreetings: parseJsonStringArray(row.alternate_greetings),
     creator: row.creator,
     characterVersion: row.character_version,
     sourcePath: row.source_path,
