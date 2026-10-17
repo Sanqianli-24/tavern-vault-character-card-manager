@@ -21,6 +21,6 @@ test("renders the Chinese character library", async () => {
   assert.match(html, /酒馆角色卡库/);
   assert.match(html, /导入文件夹/);
   assert.match(html, /全部角色/);
-  assert.match(html, /露娜・月下信使/);
+  assert.match(html, /没有找到角色卡/);
   assert.doesNotMatch(html, /codex-preview|Building your site|react-loading-skeleton/i);
 });

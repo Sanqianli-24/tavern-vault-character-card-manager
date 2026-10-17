@@ -29,7 +29,6 @@ type CharacterCard = {
   createdAt: string;
   modifiedAt: string;
   accent?: string;
-  demo?: boolean;
 };
 
 type SortMode = "explorer" | "name-desc" | "newest" | "oldest" | "rating" | "size";
@@ -58,153 +57,6 @@ function subscribeTheme(listener: () => void) {
   themeListeners.add(listener);
   return () => themeListeners.delete(listener);
 }
-
-const demoCards: CharacterCard[] = [
-  {
-    id: "demo-luna",
-    name: "露娜・月下信使",
-    fileName: "Luna_Moonlit_Messenger.png",
-    fileType: "image/png",
-    size: 2486000,
-    rating: 5,
-    favorite: true,
-    tags: [],
-    bookshelf: "最爱角色",
-    image: "https://images.unsplash.com/photo-1494790108377-be9c29b29330?auto=format&fit=crop&w=720&q=88",
-    description: "来自银月城的秘密信使。她总在午夜敲响窗户，带来一封没有署名的信。",
-    sourcePath: "Fantasy/Luna_Moonlit_Messenger.png",
-    createdAt: "2026-08-03T19:24:00.000Z",
-    modifiedAt: "2026-08-07T14:32:00.000Z",
-    accent: "#8e71d9",
-    demo: true,
-  },
-  {
-    id: "demo-shen",
-    name: "沈砚",
-    fileName: "Shen_Yan_v3.png",
-    fileType: "image/png",
-    size: 3194000,
-    rating: 4,
-    favorite: false,
-    tags: [],
-    bookshelf: "长线剧情",
-    image: "https://images.unsplash.com/photo-1500648767791-00dcc994a43e?auto=format&fit=crop&w=720&q=88",
-    description: "寡言的年轻谋士，擅长在棋局里藏下只有你能读懂的暗语。",
-    sourcePath: "LongStory/Shen_Yan_v3.png",
-    createdAt: "2026-07-29T10:12:00.000Z",
-    modifiedAt: "2026-08-06T20:01:00.000Z",
-    accent: "#9a6e55",
-    demo: true,
-  },
-  {
-    id: "demo-nora",
-    name: "诺拉 2.1",
-    fileName: "Nora_2.1.webp",
-    fileType: "image/webp",
-    size: 1857000,
-    rating: 5,
-    favorite: true,
-    tags: [],
-    bookshelf: "最爱角色",
-    image: "https://images.unsplash.com/photo-1534528741775-53994a69daeb?auto=format&fit=crop&w=720&q=88",
-    description: "霓虹雨夜中的A级雇佣兵。她不相信承诺，只相信已经上膛的武器。",
-    sourcePath: "Cyberpunk/Nora_2.1.webp",
-    createdAt: "2026-08-06T08:42:00.000Z",
-    modifiedAt: "2026-08-06T08:42:00.000Z",
-    accent: "#d0649b",
-    demo: true,
-  },
-  {
-    id: "demo-summer",
-    name: "夏川遥",
-    fileName: "Natsukawa_Haruka.png",
-    fileType: "image/png",
-    size: 2740000,
-    rating: 3,
-    favorite: false,
-    tags: [],
-    bookshelf: "日常轻松",
-    image: "https://images.unsplash.com/photo-1517841905240-472988babdf9?auto=format&fit=crop&w=720&q=88",
-    description: "住在隔壁的青梅竹马，习惯把真正想说的话写进借给你的书里。",
-    sourcePath: "Daily/Natsukawa_Haruka.png",
-    createdAt: "2026-07-17T13:12:00.000Z",
-    modifiedAt: "2026-08-04T17:25:00.000Z",
-    accent: "#d58d69",
-    demo: true,
-  },
-  {
-    id: "demo-kael",
-    name: "凯尔・灰烬骑士",
-    fileName: "Kael_Ash_Knight.png",
-    fileType: "image/png",
-    size: 4029000,
-    rating: 4,
-    favorite: false,
-    tags: [],
-    bookshelf: "长线剧情",
-    image: "https://images.unsplash.com/photo-1506794778202-cad84cf45f1d?auto=format&fit=crop&w=720&q=88",
-    description: "失去封地与姓氏的骑士，仍在为一场无人记得的战争守夜。",
-    sourcePath: "LongStory/Kael_Ash_Knight.png",
-    createdAt: "2026-06-21T09:33:00.000Z",
-    modifiedAt: "2026-08-02T22:14:00.000Z",
-    accent: "#7c7066",
-    demo: true,
-  },
-  {
-    id: "demo-iris",
-    name: "伊里斯",
-    fileName: "Iris_Oracle.json",
-    fileType: "application/json",
-    size: 186000,
-    rating: 0,
-    favorite: false,
-    tags: [],
-    bookshelf: "待体验",
-    image: "https://images.unsplash.com/photo-1544005313-94ddf0286df2?auto=format&fit=crop&w=720&q=88",
-    description: "她能看见每一个人的未来，唯独看不见你。",
-    sourcePath: "Unplayed/Iris_Oracle.json",
-    createdAt: "2026-08-07T11:07:00.000Z",
-    modifiedAt: "2026-08-07T11:07:00.000Z",
-    accent: "#4f7ca5",
-    demo: true,
-  },
-  {
-    id: "demo-7",
-    name: "安 07",
-    fileName: "Ann_07.png",
-    fileType: "image/png",
-    size: 2140000,
-    rating: 4,
-    favorite: false,
-    tags: [],
-    bookshelf: "悬疑推理",
-    image: "https://images.unsplash.com/photo-1524504388940-b1c1722653e1?auto=format&fit=crop&w=720&q=88",
-    description: "经营着一家只在雨天营业的侦探事务所。",
-    sourcePath: "Mystery/Ann_07.png",
-    createdAt: "2026-07-30T06:41:00.000Z",
-    modifiedAt: "2026-08-01T16:40:00.000Z",
-    accent: "#397c78",
-    demo: true,
-  },
-  {
-    id: "demo-12",
-    name: "安 12",
-    fileName: "Ann_12.png",
-    fileType: "image/png",
-    size: 2290000,
-    rating: 2,
-    favorite: false,
-    tags: [],
-    bookshelf: "待整理",
-    image: "https://images.unsplash.com/photo-1531123897727-8f129e1688ce?auto=format&fit=crop&w=720&q=88",
-    description: "来自另一条时间线的安，似乎认识一个完全不同的你。",
-    sourcePath: "Inbox/Ann_12.png",
-    createdAt: "2026-08-05T13:19:00.000Z",
-    modifiedAt: "2026-08-05T13:19:00.000Z",
-    accent: "#b05e72",
-    demo: true,
-  },
-];
 
 const presetShelves = ["最爱角色", "长线剧情", "日常轻松", "悬疑推理", "待体验", "待整理"];
 const explorerCollator = new Intl.Collator("zh-CN", { numeric: true, sensitivity: "base" });
@@ -250,8 +102,8 @@ function parseTagsInput(value: string) {
 }
 
 export default function CharacterManager() {
-  const [cards, setCards] = useState<CharacterCard[]>(demoCards);
-  const [selectedId, setSelectedId] = useState(demoCards[0].id);
+  const [cards, setCards] = useState<CharacterCard[]>([]);
+  const [selectedId, setSelectedId] = useState("");
   const [query, setQuery] = useState("");
   const [debouncedQuery, setDebouncedQuery] = useState("");
   const [activeShelf, setActiveShelf] = useState("收藏夹");
@@ -293,7 +145,7 @@ export default function CharacterManager() {
     if (window.desktopAPI) {
       setIsDesktop(true);
       window.desktopAPI.listCards()
-        .then((storedCards) => setCards([...demoCards, ...(storedCards as CharacterCard[])]))
+        .then((storedCards) => setCards(storedCards as CharacterCard[]))
         .catch(() => setToast("读取本地角色卡失败"));
       window.desktopAPI.getTavernStatus().then(setTavernProgress).catch(() => undefined);
       return window.desktopAPI.onTavernProgress(setTavernProgress);
@@ -407,7 +259,6 @@ export default function CharacterManager() {
 
   async function updateCard(id: string, patch: Partial<CharacterCard>) {
     setCards((current) => current.map((card) => card.id === id ? { ...card, ...patch, modifiedAt: new Date().toISOString() } : card));
-    if (id.startsWith("demo-")) return;
     const persisted: Partial<CharacterCard> = {};
     for (const [key, value] of Object.entries(patch)) {
       if ([
@@ -609,7 +460,7 @@ export default function CharacterManager() {
     try {
       const result = await window.desktopAPI.hydrateAllCards();
       const stored = await window.desktopAPI.listCards();
-      setCards([...demoCards, ...(stored as CharacterCard[])]);
+      setCards(stored as CharacterCard[]);
       setToast(result.hydrated > 0 ? `已补读 ${result.hydrated} 张角色卡的角色信息` : "没有需要补读的旧卡");
     } catch {
       setToast("补读失败，请重试");
@@ -651,11 +502,11 @@ export default function CharacterManager() {
     if (!bulkCards.length) return;
     const ids = bulkCards.map((card) => card.id);
     if (window.desktopAPI) {
-      window.desktopAPI.updateCards(ids.filter((id) => !id.startsWith("demo-")), { bookshelf: bulkShelf })
+      window.desktopAPI.updateCards(ids, { bookshelf: bulkShelf })
         .catch(() => setToast("批量移动书架失败"));
     } else {
       for (const card of bulkCards) {
-        if (!card.id.startsWith("demo-") && !card.id.startsWith("local-")) void updateCard(card.id, { bookshelf: bulkShelf });
+        if (!card.id.startsWith("local-")) void updateCard(card.id, { bookshelf: bulkShelf });
       }
     }
     setCards((current) => current.map((card) => bulkSelected.has(card.id) ? { ...card, bookshelf: bulkShelf, modifiedAt: new Date().toISOString() } : card));
@@ -667,11 +518,11 @@ export default function CharacterManager() {
     if (!bulkCards.length || !bulkRating) return;
     const ids = bulkCards.map((card) => card.id);
     if (window.desktopAPI) {
-      window.desktopAPI.updateCards(ids.filter((id) => !id.startsWith("demo-")), { rating: bulkRating })
+      window.desktopAPI.updateCards(ids, { rating: bulkRating })
         .catch(() => setToast("批量评分失败"));
     } else {
       for (const card of bulkCards) {
-        if (!card.id.startsWith("demo-") && !card.id.startsWith("local-")) void updateCard(card.id, { rating: bulkRating });
+        if (!card.id.startsWith("local-")) void updateCard(card.id, { rating: bulkRating });
       }
     }
     setCards((current) => current.map((card) => bulkSelected.has(card.id) ? { ...card, rating: bulkRating, modifiedAt: new Date().toISOString() } : card));
@@ -682,7 +533,7 @@ export default function CharacterManager() {
   async function applyBulkTag() {
     const values = parseTagsInput(bulkTagDraft);
     if (!bulkCards.length || !values.length) return;
-    const realCards = bulkCards.filter((card) => !card.id.startsWith("demo-"));
+    const realCards = bulkCards;
     if (window.desktopAPI) {
       try {
         await Promise.all(realCards.map((card) => {
@@ -698,7 +549,7 @@ export default function CharacterManager() {
     } else {
       for (const card of bulkCards) {
         const merged = Array.from(new Set([...card.tags, ...values]));
-        if (merged.length !== card.tags.length && !card.id.startsWith("demo-") && !card.id.startsWith("local-")) {
+        if (merged.length !== card.tags.length && !card.id.startsWith("local-")) {
           void updateCard(card.id, { tags: merged });
         }
       }
@@ -716,11 +567,11 @@ export default function CharacterManager() {
     if (!bulkCards.length) return;
     const ids = bulkCards.map((card) => card.id);
     if (window.desktopAPI) {
-      window.desktopAPI.deleteCards(ids.filter((id) => !id.startsWith("demo-")))
+      window.desktopAPI.deleteCards(ids)
         .catch(() => setToast("批量删除失败"));
     } else {
       for (const card of bulkCards) {
-        if (!card.id.startsWith("demo-") && !card.id.startsWith("local-")) {
+        if (!card.id.startsWith("local-")) {
           fetch(`/api/cards/${card.id}`, { method: "DELETE" }).catch(() => undefined);
         }
       }
