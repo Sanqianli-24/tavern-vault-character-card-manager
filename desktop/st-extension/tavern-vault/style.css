@@ -1,0 +1,204 @@
+/* 酒馆角色卡库 联动扩展面板样式（tv- 前缀，避免与酒馆自身样式冲突） */
+
+#tavern_vault_button {
+  font-size: 20px;
+}
+
+.tv-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  min-width: min(720px, 82vw);
+  text-align: left;
+  font-size: 14px;
+}
+
+.tv-panel-plain {
+  min-width: min(480px, 80vw);
+}
+
+.tv-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.tv-toolbar input[type="text"] {
+  flex: 1 1 180px;
+  min-width: 140px;
+  padding: 6px 10px;
+  border-radius: 6px;
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  background: rgba(0, 0, 0, 0.35);
+  color: inherit;
+  outline: none;
+}
+
+.tv-select {
+  padding: 6px 8px;
+  border-radius: 6px;
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  background: rgba(0, 0, 0, 0.35);
+  color: inherit;
+}
+
+.tv-count {
+  opacity: 0.75;
+  font-size: 13px;
+  white-space: nowrap;
+}
+
+.tv-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(128px, 1fr));
+  gap: 10px;
+  max-height: 46vh;
+  overflow-y: auto;
+  padding: 2px;
+}
+
+.tv-card {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 4px;
+  padding: 8px;
+  border-radius: 10px;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  background: rgba(0, 0, 0, 0.28);
+}
+
+.tv-thumb {
+  position: relative;
+  width: 100%;
+  aspect-ratio: 2 / 3;
+  border-radius: 8px;
+  overflow: hidden;
+  background: rgba(255, 255, 255, 0.06);
+  display: grid;
+  place-items: center;
+}
+
+.tv-thumb img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.tv-thumb-fallback {
+  font-size: 28px;
+  opacity: 0.5;
+}
+
+.tv-name {
+  font-weight: 600;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.tv-meta {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+  min-height: 16px;
+  font-size: 12px;
+}
+
+.tv-stars {
+  color: #e6b455;
+}
+
+.tv-fav {
+  color: #e0678f;
+}
+
+.tv-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  min-height: 18px;
+}
+
+.tv-tag {
+  font-size: 11px;
+  padding: 1px 6px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.1);
+  opacity: 0.85;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.tv-act {
+  margin-top: 2px;
+  width: 100%;
+  text-align: center;
+  cursor: pointer;
+}
+
+.tv-act.import {
+  border-color: #9c5c36;
+  background: #a95731;
+  color: #fff4ec;
+}
+
+.tv-act.chat {
+  border-color: rgba(255, 255, 255, 0.2);
+}
+
+.tv-section {
+  margin-top: 6px;
+  padding-top: 10px;
+  border-top: 1px solid rgba(255, 255, 255, 0.12);
+  font-weight: 600;
+  opacity: 0.9;
+}
+
+.tv-adopt-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  max-height: 22vh;
+  overflow-y: auto;
+  padding: 2px;
+}
+
+.tv-adopt-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 6px 10px;
+  border-radius: 8px;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  background: rgba(0, 0, 0, 0.22);
+}
+
+.tv-adopt-name {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.tv-adopt-item .tv-act {
+  width: auto;
+  margin-top: 0;
+  white-space: nowrap;
+}
+
+.tv-empty {
+  padding: 14px 6px;
+  opacity: 0.7;
+  text-align: center;
+  line-height: 1.7;
+}
+
+.tv-hint {
+  opacity: 0.55;
+  font-size: 12px;
+  line-height: 1.6;
+}

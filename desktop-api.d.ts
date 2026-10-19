@@ -103,6 +103,31 @@ type DesktopUpdateResult = {
   error?: string;
 };
 
+type TavernPanelCard = {
+  id: string;
+  name: string;
+  tags: string[];
+  rating: number;
+  favorite: boolean;
+  fileName: string;
+  tavernAvatar: string | null;
+  imported: boolean;
+};
+
+type TavernPanelCardPayload = {
+  ok: boolean;
+  fileName?: string;
+  mime?: string;
+  base64?: string;
+  error?: string;
+};
+
+type TavernCharacterSummary = {
+  avatar: string;
+  name: string;
+  adopted: boolean;
+};
+
 type DesktopUpdateStatus =
   | { event: "available"; version?: string }
   | { event: "not-available" }
@@ -136,6 +161,15 @@ interface Window {
     openTavernWindow(): Promise<{ ok: boolean; port?: number; error?: string }>;
     openTavernBrowser(): Promise<{ ok: boolean; port?: number; error?: string }>;
     openLibrary(): Promise<{ ok: boolean }>;
+    tavernPanelList(): Promise<TavernPanelCard[]>;
+    tavernPanelCardImage(id: string): Promise<string>;
+    tavernPanelCardPayload(id: string): Promise<TavernPanelCardPayload>;
+    tavernPanelMarkImported(id: string, avatar: string): Promise<{ ok: boolean }>;
+    tavernPanelTavernCharacters(): Promise<TavernCharacterSummary[]>;
+    tavernAdoptCharacter(avatar: string): Promise<{ ok: boolean; error?: string }>;
+    tavernChatWithCard(id: string): Promise<{ ok: boolean; error?: string }>;
+    tavernSendToTavern(ids: string[]): Promise<{ ok: boolean; sent?: number; failed?: number; error?: string }>;
+    tavernInstallExtension(): Promise<{ ok: boolean; dir?: string; error?: string }>;
     onTavernProgress(callback: (progress: TavernLaunchProgress) => void): () => void;
   };
 }

@@ -148,6 +148,138 @@ function detectTavernDir() {
   return { dir: tavernDirCandidates()[0], configured: false, exists: false, embedded: false };
 }
 
+// ---- 卡库 × 酒馆 桥接 ----
+// 卡库以 SillyTavern 扩展的形式进入酒馆界面（data/<user>/extensions/tavern-vault），
+// 扩展运行在酒馆页面主世界，通过酒馆窗口 preload 注入的 desktopAPI 与主进程互通。
+
+const ST_EXTENSION_NAME = "tavern-vault";
+const ST_EXTENSION_SOURCE = path.join(__dirname, "st-extension", ST_EXTENSION_NAME);
+
+function tavernCharactersDir() {
+  return path.join(detectTavernDir().dir, "data", "default-user", "characters");
+}
+
+function listTavernCharacterFiles() {
+  try {
+    return fs.readdirSync(tavernCharactersDir()).filter((name) => /\.png$/i.test(name));
+  } catch {
+    return [];
+  }
+}
+
+// 从 asar 里复制目录:cpSync 对 asar 源不可靠,用逐文件读写
+function copyTreeFromAsar(source, target) {
+  fs.mkdirSync(target, { recursive: true });
+  for (const entry of fs.readdirSync(source, { withFileTypes: true })) {
+    const from = path.join(source, entry.name);
+    const to = path.join(target, entry.name);
+    if (entry.isDirectory()) copyTreeFromAsar(from, to);
+    else if (entry.isFile()) fs.writeFileSync(to, fs.readFileSync(from));
+  }
+}
+
+// 把仓库里的联动扩展强制同步到酒馆运行副本（我们自己的目录始终以应用版本为准）
+function syncStExtension(tavernDir) {
+  const logFile = path.join(app.getPath("userData"), "tavern-vault-extension.log");
+  const fail = (message) => {
+    try { fs.writeFileSync(logFile, `${new Date().toISOString()} ${message}\n`, "utf8"); } catch {}
+    return false;
+  };
+  try {
+    if (!fs.existsSync(path.join(ST_EXTENSION_SOURCE, "manifest.json"))) {
+      return fail(`extension source missing: ${ST_EXTENSION_SOURCE}`);
+    }
+    const target = path.join(tavernDir, "data", "default-user", "extensions", ST_EXTENSION_NAME);
+    fs.rmSync(target, { recursive: true, force: true });
+    fs.mkdirSync(path.dirname(target), { recursive: true });
+    copyTreeFromAsar(ST_EXTENSION_SOURCE, target);
+    return fs.existsSync(path.join(target, "manifest.json")) || fail(`copy produced no manifest at ${target}`);
+  } catch (error) {
+    return fail(`sync failed: ${error?.stack || error}`);
+  }
+}
+
+function safeTavernCardName(row) {
+  return (row.name || row.fileName || "角色卡").replace(/[\\/:*?"<>|]/g, "_").slice(0, 80);
+}
+
+// 生成可写入酒馆的角色卡字节：优先用原始 PNG 重写元数据（保留用户编辑），
+// 其余格式退回 JSON 卡（webp/jpg 无法内嵌元数据）。
+function buildTavernCardFile(row) {
+  const source = findCardSource(row);
+  if (source && /\.png$/i.test(source)) {
+    try {
+      const bytes = writeCharacterCardToPng(fs.readFileSync(source), cardDataFromRow(row));
+      if (bytes) return { bytes, fileName: `${safeTavernCardName(row)}.png`, mime: "image/png" };
+      const original = fs.readFileSync(source);
+      return { bytes: original, fileName: `${safeTavernCardName(row)}.png`, mime: "image/png" };
+    } catch {}
+  }
+  const json = buildCardJson(row);
+  return { bytes: Buffer.from(json, "utf8"), fileName: `${safeTavernCardName(row)}.json`, mime: "application/json" };
+}
+
+// 确保卡已在酒馆 characters 目录（已导入直接复用文件名，否则写入），返回 avatar 文件名
+function ensureCardInTavern(row, rowsRef) {
+  const tavernFiles = listTavernCharacterFiles();
+  const remembered = String(row.tavernAvatar || "");
+  if (remembered && tavernFiles.includes(remembered)) return remembered;
+  const byName = tavernFiles.find((name) => name.toLowerCase() === String(row.fileName || "").toLowerCase());
+  if (byName) {
+    row.tavernAvatar = byName;
+    return byName;
+  }
+  const card = buildTavernCardFile(row);
+  const target = uniqueTargetPath(tavernCharactersDir(), card.fileName);
+  if (!fs.existsSync(tavernCharactersDir())) fs.mkdirSync(tavernCharactersDir(), { recursive: true });
+  fs.writeFileSync(target, card.bytes);
+  row.tavernAvatar = path.basename(target);
+  if (rowsRef) rowsRef.touched = true;
+  return row.tavernAvatar;
+}
+
+// 让酒馆页面重新拉取角色列表（写文件后调用，酒馆即刻可见）
+async function refreshTavernCharacters() {
+  if (!tavernWindow || tavernWindow.isDestroyed()) return;
+  const url = tavernWindow.webContents.getURL();
+  if (!/^http:\/\/(127\.0\.0\.1|localhost):/.test(url)) return;
+  await tavernWindow.webContents.executeJavaScript(
+    "(async()=>{const c=window.SillyTavern&&window.SillyTavern.getContext?SillyTavern.getContext():null;if(c&&typeof c.getCharacters==='function')await c.getCharacters();})()",
+    true,
+  ).catch(() => {});
+}
+
+// 在酒馆页面里选中某个角色并进入聊天
+async function selectTavernCharacter(avatar) {
+  const port = detectTavernPort();
+  const window = ensureTavernWindow();
+  window.show();
+  window.focus();
+  const url = window.webContents.getURL();
+  if (!/^http:\/\/(127\.0\.0\.1|localhost):\d+/.test(url)) {
+    await window.loadURL(`http://127.0.0.1:${port}`).catch(() => {});
+    await new Promise((resolve) => {
+      const done = () => { window.webContents.removeListener("did-finish-load", done); resolve(); };
+      window.webContents.once("did-finish-load", done);
+      setTimeout(resolve, 8000);
+    });
+  }
+  return window.webContents.executeJavaScript(
+    `(async()=>{
+      const c=window.SillyTavern&&window.SillyTavern.getContext?SillyTavern.getContext():null;
+      if(!c) return {ok:false,error:'酒馆界面尚未就绪'};
+      if(typeof c.getCharacters==='function') await c.getCharacters();
+      const chars=Array.isArray(c.characters)?c.characters:[];
+      let idx=chars.findIndex(x=>x.avatar===${JSON.stringify(avatar)});
+      if(idx<0) idx=chars.findIndex(x=>x.name===${JSON.stringify(String(avatar).replace(/\.[^.]+$/, ""))});
+      if(idx<0) return {ok:false,error:'酒馆中未找到该角色'};
+      if(typeof c.selectCharacterById==='function'){ await c.selectCharacterById(idx); return {ok:true}; }
+      return {ok:false,error:'酒馆版本不支持切换角色'};
+    })()`,
+    true,
+  ).catch((error) => ({ ok: false, error: String(error?.message || error) }));
+}
+
 function readRows() {
   const file = libraryFile();
   if (!fs.existsSync(file)) return [];
@@ -553,6 +685,8 @@ async function ensureEmbeddedRuntime(onProgress) {
     return { ok: false, error: `写入内置酒馆配置失败：${error.message || error}` };
   }
 
+  syncStExtension(runtime);
+
   fs.writeFileSync(embeddedRuntimeManifestFile(), `${JSON.stringify(stamp, null, 2)}\n`, "utf8");
   return { ok: true, fresh: true };
 }
@@ -778,7 +912,7 @@ function ensureTavernWindow() {
     {
       label: "角色卡库",
       submenu: [
-        { label: "打开角色卡库", click: () => createManagerWindow() },
+        { label: "完整卡库管理", click: () => createManagerWindow() },
         {
           label: "在浏览器打开酒馆",
           click: async () => {
@@ -1271,6 +1405,177 @@ function registerIpcHandlers() {
     createManagerWindow();
     return { ok: true };
   });
+
+  // ---- 卡库面板（酒馆内扩展）与联动 ----
+
+  ipcMain.handle("tavernPanel:list", () => {
+    const rows = readRows();
+    const tavernFiles = new Set(listTavernCharacterFiles().map((name) => name.toLowerCase()));
+    return rows.map((row) => {
+      const avatar = String(row.tavernAvatar || "");
+      const imported = (avatar && tavernFiles.has(avatar.toLowerCase()))
+        || tavernFiles.has(String(row.fileName || "").toLowerCase());
+      return {
+        id: row.id,
+        name: row.name || row.fileName,
+        tags: normalizeTags(row.userTags ?? row.tags),
+        rating: row.rating || 0,
+        favorite: row.favorite === true,
+        fileName: row.fileName || "",
+        tavernAvatar: avatar || null,
+        imported,
+      };
+    });
+  });
+
+  ipcMain.handle("tavernPanel:cardImage", (_event, id) => {
+    const row = readRows().find((item) => item.id === id);
+    if (!row) return "";
+    const source = (row.imagePath && fs.existsSync(row.imagePath)) ? row.imagePath : findCardSource(row);
+    if (!source) return "";
+    try {
+      const mime = /\.png$/i.test(source) ? "image/png" : /\.webp$/i.test(source) ? "image/webp" : "image/jpeg";
+      return `data:${mime};base64,${fs.readFileSync(source).toString("base64")}`;
+    } catch {
+      return "";
+    }
+  });
+
+  ipcMain.handle("tavernPanel:cardPayload", (_event, id) => {
+    const row = readRows().find((item) => item.id === id);
+    if (!row) return { ok: false, error: "角色卡不存在" };
+    const card = buildTavernCardFile(row);
+    return { ok: true, fileName: card.fileName, mime: card.mime, base64: card.bytes.toString("base64") };
+  });
+
+  ipcMain.handle("tavernPanel:markImported", (_event, id, avatar) => {
+    const rows = readRows();
+    const index = rows.findIndex((item) => item.id === id);
+    if (index < 0) return { ok: false };
+    const safeAvatar = path.basename(String(avatar || ""));
+    rows[index].tavernAvatar = safeAvatar;
+    writeRows(rows);
+    return { ok: true };
+  });
+
+  ipcMain.handle("tavernPanel:tavernCharacters", () => {
+    const rows = readRows();
+    const known = new Set();
+    for (const row of rows) {
+      if (row.tavernAvatar) known.add(String(row.tavernAvatar).toLowerCase());
+      if (row.fileName) known.add(String(row.fileName).toLowerCase());
+    }
+    return listTavernCharacterFiles()
+      .map((avatar) => {
+        const parsed = parseCharacterCardFile(path.join(tavernCharactersDir(), avatar));
+        return { avatar, name: parsed?.name?.trim() || avatar.replace(/\.png$/i, ""), adopted: known.has(avatar.toLowerCase()) };
+      })
+      .sort((a, b) => a.name.localeCompare(b.name, "zh-Hans-CN"));
+  });
+
+  ipcMain.handle("tavern:adoptCharacter", (_event, avatar) => {
+    const safeAvatar = path.basename(String(avatar || ""));
+    if (!/\.png$/i.test(safeAvatar)) return { ok: false, error: "仅支持 PNG 角色卡" };
+    const source = path.join(tavernCharactersDir(), safeAvatar);
+    if (!fs.existsSync(source)) return { ok: false, error: "酒馆角色文件不存在" };
+
+    const rows = readRows();
+    const size = fs.statSync(source).size;
+    const fileName = safeAvatar;
+    if (rows.some((row) => `${String(row.fileName || "").toLowerCase()}::${Number(row.size) || 0}` === `${fileName.toLowerCase()}::${size}`)) {
+      return { ok: false, error: "卡库中已有这张卡" };
+    }
+    const content = parseCharacterCardFile(source);
+    const id = crypto.randomUUID();
+    const now = new Date().toISOString();
+    const userTags = [];
+    const row = {
+      id,
+      name: content?.name?.trim() || fileName.replace(/\.png$/i, ""),
+      fileName,
+      fileType: "image/png",
+      size,
+      rating: 0,
+      favorite: false,
+      tags: userTags,
+      userTags,
+      sourceTags: normalizeTags(content?.tags),
+      tagOwnershipMigrated: true,
+      bookshelf: "未分类",
+      imagePath: "",
+      description: content?.description?.trim() || "从酒馆收录的角色卡。",
+      personality: content?.personality ?? "",
+      scenario: content?.scenario ?? "",
+      firstMessage: content?.firstMes ?? "",
+      exampleDialogue: content?.mesExample ?? "",
+      creatorNotes: content?.creatorNotes ?? "",
+      systemPrompt: content?.systemPrompt ?? "",
+      postHistoryInstructions: content?.postHistoryInstructions ?? "",
+      alternateGreetings: content?.alternateGreetings ?? [],
+      creator: content?.creator ?? "",
+      characterVersion: content?.characterVersion ?? "",
+      sourcePath: `sillytavern resource/data/default-user/characters/${safeAvatar}`,
+      tavernAvatar: safeAvatar,
+      createdAt: now,
+      modifiedAt: now,
+      accent: "#7557c5",
+    };
+    rows.unshift(row);
+    writeRows(rows);
+    return { ok: true, card: publicCard(row) };
+  });
+
+  ipcMain.handle("tavern:chatWithCard", async (_event, id) => {
+    const rows = readRows();
+    const row = rows.find((item) => item.id === id);
+    if (!row) return { ok: false, error: "角色卡不存在" };
+
+    const port = detectTavernPort();
+    if (!(await isPortOpen(port))) {
+      if (!launchTask) launchTask = launchSillyTavern().finally(() => { launchTask = null; });
+      const startedAt = Date.now();
+      while (Date.now() - startedAt < 120000) {
+        if (await isPortOpen(port)) break;
+        await delay(900);
+      }
+      if (!(await isPortOpen(port))) return { ok: false, error: "酒馆启动超时，请稍后重试" };
+    }
+
+    let avatar = row.tavernAvatar;
+    if (!avatar || !listTavernCharacterFiles().includes(avatar)) {
+      avatar = ensureCardInTavern(row, rows);
+      writeRows(rows);
+    }
+    return selectTavernCharacter(avatar);
+  });
+
+  ipcMain.handle("cards:sendToTavern", async (_event, ids) => {
+    const idSet = new Set(Array.isArray(ids) ? ids : []);
+    const rows = readRows();
+    let sent = 0;
+    let failed = 0;
+    for (const row of rows) {
+      if (!idSet.has(row.id)) continue;
+      try {
+        ensureCardInTavern(row, rows);
+        sent += 1;
+      } catch {
+        failed += 1;
+      }
+    }
+    if (sent) writeRows(rows);
+    await refreshTavernCharacters();
+    return { ok: true, sent, failed };
+  });
+
+  ipcMain.handle("tavern:installExtension", () => {
+    const detected = detectTavernDir();
+    if (detected.embedded) return { ok: false, error: "内置酒馆会自动携带卡库扩展，无需安装" };
+    if (!detected.exists) return { ok: false, error: "酒馆目录不存在，请先选择目录" };
+    const ok = syncStExtension(detected.dir);
+    if (!ok) return { ok: false, error: "扩展文件缺失，请重新安装本应用" };
+    return { ok: true, dir: path.join(detected.dir, "data", "default-user", "extensions", ST_EXTENSION_NAME) };
+  });
 }
 
 function createManagerWindow() {
@@ -1341,6 +1646,8 @@ if (!hasLock) {
     // 内置模式：双击打开直接进入酒馆界面（启动间隙显示过渡页）；外部模式与冒烟测试保持原行为
     const bootStraightToTavern = !SMOKE_TEST && detectedAtBoot.embedded && embeddedAvailable();
     if (bootStraightToTavern) {
+      // 应用升级而内置酒馆版本未变时,也要把联动扩展更新到运行副本
+      if (embeddedRuntimeReady()) syncStExtension(embeddedRuntimeDir());
       showTavernSplash();
       launchTask = launchSillyTavern().finally(() => { launchTask = null; });
     } else {

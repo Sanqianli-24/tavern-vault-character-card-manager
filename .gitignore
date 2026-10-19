@@ -39,6 +39,7 @@ yarn-error.log*
 /dist/
 /desktop-dist/
 /release/
+/release-lite/
 /.wrangler/
 /outputs/
 /work/

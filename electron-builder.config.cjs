@@ -28,8 +28,9 @@ const config = {
     "desktop/main.cjs",
     "desktop/preload.cjs",
     "desktop/character-parser.cjs",
+    "desktop/st-extension/**/*",
     "desktop-dist/**/*",
-    "package.json",
+    "package.json"
   ],
   extraResources: hasEmbedded
     ? [

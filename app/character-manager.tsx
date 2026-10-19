@@ -893,6 +893,58 @@ export default function CharacterManager() {
       .catch(() => showToast("批量导出失败", "error"));
   }
 
+  const [chatPendingId, setChatPendingId] = useState<string | null>(null);
+
+  async function chatWithTavern(id: string) {
+    if (!window.desktopAPI) return;
+    if (chatPendingId) return;
+    setChatPendingId(id);
+    try {
+      const result = await window.desktopAPI.tavernChatWithCard(id);
+      if (!result.ok) showToast(result.error || "打开聊天失败", "error");
+      else showToast("已在酒馆中打开角色聊天");
+    } catch {
+      showToast("打开聊天失败", "error");
+    } finally {
+      setChatPendingId(null);
+    }
+  }
+
+  const [sendingToTavern, setSendingToTavern] = useState(false);
+
+  async function sendSelectedToTavern() {
+    if (!window.desktopAPI || !bulkSelected.size || sendingToTavern) return;
+    setSendingToTavern(true);
+    try {
+      const result = await window.desktopAPI.tavernSendToTavern([...bulkSelected]);
+      if (!result.ok) {
+        showToast(result.error || "发送失败", "error");
+        return;
+      }
+      const parts = [`已发送 ${result.sent ?? 0} 张到酒馆`];
+      if (result.failed) parts.push(`${result.failed} 张失败`);
+      showToast(parts.join("，"));
+    } catch {
+      showToast("发送失败", "error");
+    } finally {
+      setSendingToTavern(false);
+    }
+  }
+
+  async function installTavernExtension() {
+    if (!window.desktopAPI) return;
+    try {
+      const result = await window.desktopAPI.tavernInstallExtension();
+      if (!result.ok) {
+        showToast(result.error || "安装失败", "error");
+        return;
+      }
+      showToast("已安装卡库扩展，刷新酒馆页面即可看到「卡库」按钮");
+    } catch {
+      showToast("安装失败", "error");
+    }
+  }
+
   async function launchTavern() {
     if (!window.desktopAPI) return;
     setTavernPanelOpen(true);
@@ -1442,6 +1494,7 @@ export default function CharacterManager() {
                 <button onClick={() => { setBulkTagDraft(""); setBulkModal("tag"); }}><span>#</span>添加标签</button>
                 <button onClick={() => { setBulkShelf("未分类"); setBulkModal("shelf"); }}><span>▰</span>移入书架</button>
                 <button onClick={() => { setBulkRating(0); setBulkModal("rating"); }}><span>★</span>批量评分</button>
+                {isDesktop && <button onClick={() => void sendSelectedToTavern()} disabled={sendingToTavern}><span>▶</span>发送到酒馆</button>}
                 {isDesktop && <button onClick={exportSelected}><span>⤓</span>导出</button>}
                 <button className="danger" onClick={() => setBulkModal("delete")}><span>×</span>删除</button>
               </div>
@@ -1628,6 +1681,7 @@ export default function CharacterManager() {
             ) : (
               <><span>所有更改均已自动保存</span><i>✓</i></>
             )}
+            <button className="detail-chat" onClick={() => void chatWithTavern(selected.id)}><span aria-hidden="true">▶</span>在酒馆中聊天</button>
             <button className="detail-export" onClick={() => exportCard(selected.id)}><span aria-hidden="true">⤓</span>导出</button>
           </div>
         </aside>
@@ -1637,6 +1691,7 @@ export default function CharacterManager() {
         <>
           <div className="menu-backdrop" onClick={() => setCardMenu(null)} onContextMenu={(event) => { event.preventDefault(); setCardMenu(null); }} />
           <div className="card-context-menu" role="menu" style={{ left: cardMenu.x, top: cardMenu.y }}>
+            <button role="menuitem" onClick={() => { const id = cardMenu.id; setCardMenu(null); void chatWithTavern(id); }}><span>▶</span>在酒馆中聊天</button>
             <button role="menuitem" onClick={() => { const id = cardMenu.id; setCardMenu(null); openDetails(id); }}><span>◉</span>查看详情</button>
             <button role="menuitem" onClick={() => { const id = cardMenu.id; setCardMenu(null); exportCard(id); }}><span>⤓</span>导出</button>
             <button role="menuitem" className="danger" onClick={() => { const id = cardMenu.id; setCardMenu(null); setConfirmDeleteId(id); }}><span>×</span>删除</button>
@@ -1851,6 +1906,18 @@ export default function CharacterManager() {
                     ? settings?.sillyTavernDir ? "已手动配置，目录有效" : "自动检测到该目录，也可手动指定"
                     : "目录不存在，请点击「浏览」选择 SillyTavern 安装目录"}
               </p>
+              {!settings?.tavernEmbedded && settings?.dirExists && (
+                <div className="settings-dir-row">
+                  <button className="install-extension" onClick={() => void installTavernExtension()}>
+                    为外部酒馆安装卡库联动扩展
+                  </button>
+                </div>
+              )}
+              {!settings?.tavernEmbedded && settings?.dirExists && (
+                <p className="settings-hint">
+                  安装后刷新酒馆页面（F5），角色面板按钮行会出现「卡库」入口，可在酒馆里直接浏览卡库、导入并开聊。
+                </p>
+              )}
             </div>
 
             <div className="settings-field">

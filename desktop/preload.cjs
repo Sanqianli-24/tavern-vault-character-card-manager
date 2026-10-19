@@ -41,6 +41,15 @@ contextBridge.exposeInMainWorld("desktopAPI", {
   openTavernWindow: () => ipcRenderer.invoke("tavern:openWindow"),
   openTavernBrowser: () => ipcRenderer.invoke("tavern:openBrowser"),
   openLibrary: () => ipcRenderer.invoke("library:open"),
+  tavernPanelList: () => ipcRenderer.invoke("tavernPanel:list"),
+  tavernPanelCardImage: (id) => ipcRenderer.invoke("tavernPanel:cardImage", id),
+  tavernPanelCardPayload: (id) => ipcRenderer.invoke("tavernPanel:cardPayload", id),
+  tavernPanelMarkImported: (id, avatar) => ipcRenderer.invoke("tavernPanel:markImported", id, avatar),
+  tavernPanelTavernCharacters: () => ipcRenderer.invoke("tavernPanel:tavernCharacters"),
+  tavernAdoptCharacter: (avatar) => ipcRenderer.invoke("tavern:adoptCharacter", avatar),
+  tavernChatWithCard: (id) => ipcRenderer.invoke("tavern:chatWithCard", id),
+  tavernSendToTavern: (ids) => ipcRenderer.invoke("cards:sendToTavern", ids),
+  tavernInstallExtension: () => ipcRenderer.invoke("tavern:installExtension"),
   onTavernProgress: (callback) => {
     const handler = (_event, progress) => callback(progress);
     ipcRenderer.on("tavern:progress", handler);
