@@ -36,7 +36,20 @@ const CARD_COLUMNS: Array<[name: string, definition: string]> = [
   ["modified_at", "TEXT NOT NULL DEFAULT ''"],
 ];
 
-export async function ensureCardsTable(db: D1Database) {
+let schemaReady: Promise<void> | null = null;
+
+export function ensureCardsTable(db: D1Database) {
+  // 每个请求都跑 DDL 太贵：isolate 内缓存一次成功结果。
+  if (!schemaReady) {
+    schemaReady = runEnsureCardsTable(db).catch((error) => {
+      schemaReady = null;
+      throw error;
+    });
+  }
+  return schemaReady;
+}
+
+async function runEnsureCardsTable(db: D1Database) {
   await db.batch([
     db.prepare(`CREATE TABLE IF NOT EXISTS character_cards (
       id TEXT PRIMARY KEY,
@@ -69,10 +82,17 @@ export async function ensureCardsTable(db: D1Database) {
   ]);
   const info = await db.prepare("PRAGMA table_info(character_cards)").all<{ name: string }>();
   const present = new Set((info.results ?? []).map((row) => row.name));
-  const alters = CARD_COLUMNS
-    .filter(([column]) => !present.has(column))
-    .map(([column, definition]) => db.prepare(`ALTER TABLE character_cards ADD COLUMN ${column} ${definition}`));
-  if (alters.length) await db.batch(alters);
+  const missing = CARD_COLUMNS.filter(([column]) => !present.has(column));
+  if (missing.length) {
+    try {
+      await db.batch(missing.map(([column, definition]) =>
+        db.prepare(`ALTER TABLE character_cards ADD COLUMN ${column} ${definition}`),
+      ));
+    } catch (error) {
+      // 并发请求同时补列时后到者会撞 duplicate column，忽略即可。
+      if (!/duplicate column/i.test(String(error))) throw error;
+    }
+  }
 }
 
 export type StoredCardRow = {
@@ -122,7 +142,8 @@ export function serializeCard(row: StoredCardRow) {
     favorite: Boolean(row.favorite),
     tags: parseJsonStringArray(row.tags),
     bookshelf: row.bookshelf,
-    image: row.image_key ? `/api/cards/file/${row.id}` : "",
+    // JSON 卡在 R2 里存的是文本文件，当缩略图必然破图，回退到首字母占位。
+    image: row.image_key && !row.file_type.includes("json") ? `/api/cards/file/${row.id}` : "",
     description: row.description,
     personality: row.personality,
     scenario: row.scenario,

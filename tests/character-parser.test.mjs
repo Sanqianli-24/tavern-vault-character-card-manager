@@ -7,7 +7,7 @@ import zlib from "node:zlib";
 import { createRequire } from "node:module";
 
 const require = createRequire(import.meta.url);
-const { parseCharacterCardFile } = require("../desktop/character-parser.cjs");
+const { parseCharacterCardFile, writeCharacterCardToPng } = require("../desktop/character-parser.cjs");
 
 const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "tavern-parser-"));
 test.after(() => {
@@ -158,4 +158,68 @@ test("parses a plain JSON card file", () => {
 test("returns null for malformed JSON files", () => {
   const filePath = writeTemp("bad.json", Buffer.from("{not json", "utf8"));
   assert.equal(parseCharacterCardFile(filePath), null);
+});
+
+test("prefers ccv3 over chara when both keywords exist", () => {
+  const charaFirst = tEXt("chara", base64(v2Card));
+  const ccv3Second = tEXt("ccv3", base64(v3Card));
+  const filePath = writeTemp("dual-keyword.png", makePng([charaFirst, ccv3Second]));
+  const parsed = parseCharacterCardFile(filePath);
+  assert.equal(parsed.name, "测试角色乙");
+});
+
+test("writes edited card data back into a PNG and round-trips", () => {
+  const original = makePng([tEXt("chara", base64(v2Card))]);
+  const editedData = {
+    name: "编辑后的角色",
+    description: "用户编辑过的描述。",
+    personality: "沉稳",
+    scenario: "深夜图书馆",
+    first_mes: "更新后的开场白。",
+    mes_example: "",
+    creator_notes: "",
+    system_prompt: "",
+    post_history_instructions: "",
+    alternate_greetings: ["备选开场白"],
+    creator: "作者甲",
+    character_version: "2.1",
+    tags: ["已编辑"],
+  };
+  const rewritten = writeCharacterCardToPng(original, editedData);
+  assert.ok(rewritten && rewritten.length > original.length);
+  const filePath = writeTemp("rewritten.png", rewritten);
+  const parsed = parseCharacterCardFile(filePath);
+  assert.equal(parsed.name, "编辑后的角色");
+  assert.equal(parsed.description, "用户编辑过的描述。");
+  assert.equal(parsed.firstMes, "更新后的开场白。");
+  assert.deepEqual(parsed.alternateGreetings, ["备选开场白"]);
+  assert.deepEqual(parsed.tags, ["已编辑"]);
+  assert.equal(parsed.characterVersion, "2.1");
+});
+
+test("rewritten PNG removes stale card chunks", () => {
+  const original = makePng([tEXt("chara", base64(v2Card))]);
+  const rewritten = writeCharacterCardToPng(original, { name: "重写卡" });
+  // 再用旧数据重写一次：解析结果必须来自最新一次写入，而不是叠加的旧块
+  const rewrittenTwice = writeCharacterCardToPng(rewritten, { name: "再次重写" });
+  const filePath = writeTemp("rewritten-twice.png", rewrittenTwice);
+  const parsed = parseCharacterCardFile(filePath);
+  assert.equal(parsed.name, "再次重写");
+});
+
+test("parses raw UTF-8 JSON payloads in tEXt without base64", () => {
+  const payload = JSON.stringify(v2Card, null, 0);
+  const chunkData = Buffer.concat([
+    Buffer.from("chara", "latin1"),
+    Buffer.from([0]),
+    Buffer.from(payload, "utf8"),
+  ]);
+  const filePath = writeTemp("utf8-text.png", makePng([chunk("tEXt", chunkData)]));
+  const parsed = parseCharacterCardFile(filePath);
+  assert.equal(parsed.name, "测试角色甲");
+  assert.equal(parsed.description, "这是 V2 测试角色。");
+});
+
+test("writeCharacterCardToPng rejects non-PNG buffers", () => {
+  assert.equal(writeCharacterCardToPng(Buffer.from("not a png"), { name: "x" }), null);
 });

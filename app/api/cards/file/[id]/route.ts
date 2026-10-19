@@ -7,7 +7,7 @@ function contentDisposition(fileName: string) {
 
 function buildCardJson(card: ReturnType<typeof serializeCard>) {
   const data = {
-    name: card.name,
+    name: card.name || card.fileName || "未命名角色",
     description: card.description || "",
     personality: card.personality || "",
     scenario: card.scenario || "",
@@ -59,6 +59,9 @@ export async function GET(
     object.writeHttpMetadata(headers);
     headers.set("etag", object.httpEtag);
     headers.set("cache-control", "private, max-age=3600");
+    if (request.headers.get("if-none-match") === object.httpEtag) {
+      return new Response(null, { status: 304, headers });
+    }
     if (wantsDownload) headers.set("content-disposition", contentDisposition(row.file_name || "character-card"));
     return new Response(object.body, { headers });
   } catch (error) {

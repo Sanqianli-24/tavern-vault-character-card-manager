@@ -1,6 +1,6 @@
 import type { Metadata } from "next";
 import { headers } from "next/headers";
-import { THEMES } from "./themes";
+import { THEMES, THEME_STORAGE_KEY } from "./themes";
 import "./globals.css";
 
 export async function generateMetadata(): Promise<Metadata> {
@@ -36,7 +36,7 @@ export default function RootLayout({ children }: Readonly<{ children: React.Reac
         <script
           dangerouslySetInnerHTML={{
             __html:
-              `try{var t=localStorage.getItem('tavern-vault-theme');if(t&&/^(?:${THEME_IDS})$/.test(t))document.documentElement.dataset.theme=t}catch(e){}`,
+              `try{var t=localStorage.getItem('${THEME_STORAGE_KEY}');if(t&&/^(?:${THEME_IDS})$/.test(t))document.documentElement.dataset.theme=t}catch(e){}`,
           }}
         />
         {children}

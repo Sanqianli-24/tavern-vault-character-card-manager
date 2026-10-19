@@ -37,14 +37,13 @@ function validatePatch(payload: Record<string, unknown>): ValidatedPatch | { err
       if (key === "name" && !value.trim()) return { error: "角色名称不能为空" };
       if (key === "bookshelf" && !value.trim()) return { error: "书架名称不能为空" };
       assignments.push(`${allowedFields.get(key)} = ?`);
-      values.push(value.slice(0, STRING_LIMIT));
+      values.push(value.slice(0, key === "name" || key === "bookshelf" ? 200 : STRING_LIMIT));
     } else if (key === "rating") {
-      const rating = Number(value);
-      if (!Number.isInteger(rating) || rating < 0 || rating > 5) {
+      if (typeof value !== "number" || !Number.isInteger(value) || value < 0 || value > 5) {
         return { error: "rating 必须是 0-5 的整数" };
       }
       assignments.push("rating = ?");
-      values.push(rating);
+      values.push(value);
     } else if (key === "favorite") {
       if (typeof value !== "boolean") return { error: "favorite 必须是布尔值" };
       assignments.push("favorite = ?");
@@ -54,7 +53,7 @@ function validatePatch(payload: Record<string, unknown>): ValidatedPatch | { err
         return { error: `${key} 必须是字符串数组` };
       }
       assignments.push(`${allowedFields.get(key)} = ?`);
-      values.push(JSON.stringify(value.slice(0, 100)));
+      values.push(JSON.stringify(value.slice(0, 100).map((item) => item.slice(0, key === "tags" ? 60 : 10000))));
     }
   }
   if (!assignments.length) return { error: "没有可更新的字段" };
