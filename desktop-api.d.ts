@@ -135,6 +135,7 @@ interface Window {
     startSillyTavern(): Promise<TavernLaunchProgress>;
     openTavernWindow(): Promise<{ ok: boolean; port?: number; error?: string }>;
     openTavernBrowser(): Promise<{ ok: boolean; port?: number; error?: string }>;
+    openLibrary(): Promise<{ ok: boolean }>;
     onTavernProgress(callback: (progress: TavernLaunchProgress) => void): () => void;
   };
 }

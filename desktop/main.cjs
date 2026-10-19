@@ -1,4 +1,4 @@
-const { app, BrowserWindow, dialog, ipcMain, shell } = require("electron");
+const { app, BrowserWindow, dialog, ipcMain, Menu, shell } = require("electron");
 const fs = require("node:fs");
 const net = require("node:net");
 const path = require("node:path");
@@ -754,30 +754,43 @@ async function launchEmbeddedTavern(port) {
   updateTavernState({ phase: "error", progress: 100, message: "启动等待超时", detail: `端口 ${port} 在 180 秒内没有响应` }, "内置酒馆启动超时，请重试或反馈日志");
 }
 
-// 应用内酒馆窗口：承载内置酒馆界面，也可用于查看已在运行的外部酒馆
-function openTavernWindow(port) {
-  if (tavernWindow && !tavernWindow.isDestroyed()) {
-    tavernWindow.show();
-    tavernWindow.focus();
-    tavernWindow.loadURL(`http://127.0.0.1:${port}`).catch(() => {});
-    return;
-  }
+// 应用内酒馆窗口：内置模式下的主窗口（打开应用直接进入酒馆），
+// 也用于在应用内查看已在运行的外部酒馆。
+function ensureTavernWindow() {
+  if (tavernWindow && !tavernWindow.isDestroyed()) return tavernWindow;
   tavernWindow = new BrowserWindow({
     width: 1440,
     height: 920,
     minWidth: 960,
     minHeight: 640,
     backgroundColor: "#0d0d11",
-    title: "内置酒馆 · SillyTavern",
-    autoHideMenuBar: true,
+    title: "酒馆角色卡库",
     show: false,
     webPreferences: {
+      preload: path.join(__dirname, "preload.cjs"),
       contextIsolation: true,
       nodeIntegration: false,
       sandbox: true,
     },
   });
-  tavernWindow.setMenu(null);
+  // 酒馆页面没有自己的入口回到卡库，用最小菜单栏提供入口
+  tavernWindow.setMenu(Menu.buildFromTemplate([
+    {
+      label: "角色卡库",
+      submenu: [
+        { label: "打开角色卡库", click: () => createManagerWindow() },
+        {
+          label: "在浏览器打开酒馆",
+          click: async () => {
+            const port = detectTavernPort();
+            if (await isPortOpen(port)) await shell.openExternal(`http://127.0.0.1:${port}`);
+          },
+        },
+        { type: "separator" },
+        { label: "退出", click: () => app.quit() },
+      ],
+    },
+  ]));
   tavernWindow.webContents.setWindowOpenHandler(({ url }) => {
     if (/^http:\/\/(127\.0\.0\.1|localhost):\d+\//i.test(url)) return { action: "allow" };
     if (/^https?:/i.test(url)) shell.openExternal(url);
@@ -785,7 +798,68 @@ function openTavernWindow(port) {
   });
   tavernWindow.once("ready-to-show", () => tavernWindow.show());
   tavernWindow.on("closed", () => { tavernWindow = null; });
-  tavernWindow.loadURL(`http://127.0.0.1:${port}`).catch(() => {});
+  return tavernWindow;
+}
+
+function openTavernWindow(port) {
+  const window = ensureTavernWindow();
+  window.show();
+  window.focus();
+  window.loadURL(`http://127.0.0.1:${port}`).catch(() => {});
+}
+
+// 启动酒馆前的过渡页：实时显示启动进度（复用 tavern:progress 推送），
+// 首次使用时的文件复制进度也在这里展示；出错时提供重试与打开卡库入口。
+function tavernSplashUrl() {
+  const html = `<!doctype html><html><head><meta charset="utf-8"><title>酒馆角色卡库</title><style>
+    body{margin:0;height:100vh;display:grid;place-items:center;background:#0d0d11;color:#eee;
+      font-family:"Microsoft YaHei","Segoe UI",sans-serif}
+    .box{width:min(520px,86vw);text-align:center}
+    .spin{width:46px;height:46px;margin:0 auto 26px;border-radius:50%;border:3px solid #3a2a22;
+      border-top-color:#d97b4a;animation:spin 1s linear infinite}
+    @keyframes spin{to{transform:rotate(360deg)}}
+    h1{margin:0 0 10px;font-size:17px;font-weight:600}
+    p{margin:0 0 22px;color:#9b9287;font-size:12px;min-height:18px;word-break:break-all}
+    .bar{height:5px;border-radius:3px;background:#241d19;overflow:hidden}
+    .bar i{display:block;height:100%;width:0;background:linear-gradient(90deg,#a95731,#d97b4a);
+      border-radius:3px;transition:width .4s}
+    .btns{margin-top:26px;display:none;gap:10px;justify-content:center}
+    .btns.show{display:flex}
+    button{height:34px;padding:0 16px;border:1px solid #9c5c36;border-radius:6px;background:#a95731;
+      color:#fff4ec;cursor:pointer;font-size:12px;font-weight:600}
+    button.ghost{border-color:#4a4038;background:#241d19;color:#c9c0b4}
+  </style></head><body><div class="box">
+    <div class="spin"></div>
+    <h1 id="msg">正在启动内置酒馆…</h1>
+    <p id="detail">首次使用会先准备文件，仅此一次</p>
+    <div class="bar"><i id="fill"></i></div>
+    <div class="btns" id="btns">
+      <button class="ghost" id="lib">打开角色卡库</button>
+      <button id="retry">重新尝试</button>
+    </div>
+  </div><script>
+    var api = window.desktopAPI;
+    function bind(id, fn) { var el = document.getElementById(id); if (el) el.onclick = fn; }
+    if (api) {
+      api.onTavernProgress(function (p) {
+        var msg = document.getElementById("msg");
+        var detail = document.getElementById("detail");
+        var fill = document.getElementById("fill");
+        if (msg && p.message) msg.textContent = p.message;
+        if (detail && p.detail) detail.textContent = p.detail;
+        if (fill) fill.style.width = Math.max(2, Math.min(100, p.progress || 0)) + "%";
+        if (p.phase === "error") document.getElementById("btns").className = "btns show";
+      });
+      bind("retry", function () { api.startSillyTavern(); });
+      bind("lib", function () { api.openLibrary(); });
+    }
+  </script></body></html>`;
+  return `data:text/html;charset=utf-8,${encodeURIComponent(html)}`;
+}
+
+function showTavernSplash() {
+  const window = ensureTavernWindow();
+  window.loadURL(tavernSplashUrl()).catch(() => {});
 }
 
 function uniqueTargetPath(dir, fileName) {
@@ -821,6 +895,19 @@ function setupAutoUpdater() {
   } catch {
     autoUpdater = null;
   }
+}
+
+// 卡库窗口改为按需打开后可能不存在，对话框要能在无父窗口时独立弹出
+function showSaveDialogSafe(options) {
+  return mainWindow && !mainWindow.isDestroyed()
+    ? dialog.showSaveDialog(mainWindow, options)
+    : dialog.showSaveDialog(options);
+}
+
+function showOpenDialogSafe(options) {
+  return mainWindow && !mainWindow.isDestroyed()
+    ? dialog.showOpenDialog(mainWindow, options)
+    : dialog.showOpenDialog(options);
 }
 
 function registerIpcHandlers() {
@@ -1020,7 +1107,7 @@ function registerIpcHandlers() {
       ? path.basename(source)
       : `${(row.name || "角色卡").replace(/[\\/:*?"<>|]/g, "_").slice(0, 80)}.json`;
     const extension = path.extname(defaultName).toLowerCase() || ".json";
-    const result = await dialog.showSaveDialog(mainWindow, {
+    const result = await showSaveDialogSafe({
       title: "导出角色卡",
       defaultPath: defaultName,
       filters: [{ name: extension === ".json" ? "JSON 卡片" : "图片卡片", extensions: [extension.replace(".", "")] }],
@@ -1038,7 +1125,7 @@ function registerIpcHandlers() {
     const idSet = new Set(Array.isArray(ids) ? ids : []);
     const rows = readRows().filter((row) => idSet.has(row.id));
     if (!rows.length) return { ok: false, error: "没有可导出的角色卡" };
-    const result = await dialog.showOpenDialog(mainWindow, {
+    const result = await showOpenDialogSafe({
       title: "选择导出位置",
       properties: ["openDirectory", "createDirectory"],
     });
@@ -1098,7 +1185,7 @@ function registerIpcHandlers() {
   });
 
   ipcMain.handle("settings:pickDirectory", async () => {
-    const result = await dialog.showOpenDialog(mainWindow, {
+    const result = await showOpenDialogSafe({
       title: "选择 SillyTavern 目录",
       properties: ["openDirectory"],
     });
@@ -1179,9 +1266,14 @@ function registerIpcHandlers() {
     await shell.openExternal(`http://127.0.0.1:${port}`);
     return { ok: true, port };
   });
+
+  ipcMain.handle("library:open", () => {
+    createManagerWindow();
+    return { ok: true };
+  });
 }
 
-function createWindow() {
+function createManagerWindow() {
   mainWindow = new BrowserWindow({
     width: 1500,
     height: 920,
@@ -1233,21 +1325,29 @@ if (!hasLock) {
   app.quit();
 } else {
   app.on("second-instance", () => {
-    if (!mainWindow) return;
-    if (mainWindow.isMinimized()) mainWindow.restore();
-    mainWindow.focus();
+    const target = !mainWindow?.isDestroyed() ? mainWindow : (!tavernWindow?.isDestroyed() ? tavernWindow : null);
+    if (!target) return;
+    if (target.isMinimized()) target.restore();
+    target.focus();
   });
 
   app.whenReady().then(() => {
     const detectedAtBoot = detectTavernDir();
     tavernState = {
       ...tavernState,
-      detail: detectedAtBoot.embedded ? "内置酒馆待命，点击启动即可使用" : `等待启动 ${detectedAtBoot.dir}`,
+      detail: detectedAtBoot.embedded ? "正在自动启动内置酒馆" : `等待启动 ${detectedAtBoot.dir}`,
     };
     registerIpcHandlers();
-    createWindow();
+    // 内置模式：双击打开直接进入酒馆界面（启动间隙显示过渡页）；外部模式与冒烟测试保持原行为
+    const bootStraightToTavern = !SMOKE_TEST && detectedAtBoot.embedded && embeddedAvailable();
+    if (bootStraightToTavern) {
+      showTavernSplash();
+      launchTask = launchSillyTavern().finally(() => { launchTask = null; });
+    } else {
+      createManagerWindow();
+    }
     setupAutoUpdater();
-    app.on("activate", () => { if (BrowserWindow.getAllWindows().length === 0) createWindow(); });
+    app.on("activate", () => { if (BrowserWindow.getAllWindows().length === 0) createManagerWindow(); });
   });
 
   app.on("before-quit", () => {

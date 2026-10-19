@@ -40,6 +40,7 @@ contextBridge.exposeInMainWorld("desktopAPI", {
   startSillyTavern: () => ipcRenderer.invoke("tavern:start"),
   openTavernWindow: () => ipcRenderer.invoke("tavern:openWindow"),
   openTavernBrowser: () => ipcRenderer.invoke("tavern:openBrowser"),
+  openLibrary: () => ipcRenderer.invoke("library:open"),
   onTavernProgress: (callback) => {
     const handler = (_event, progress) => callback(progress);
     ipcRenderer.on("tavern:progress", handler);
