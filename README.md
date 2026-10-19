@@ -1,99 +1,70 @@
-# vinext-starter
+# 酒馆角色卡库（Tavern Card Library）
 
-A clean full-stack starter running on
-[vinext](https://github.com/cloudflare/vinext), with optional Cloudflare D1 and
-Drizzle support.
+中文 SillyTavern 角色卡管理器与一键启动器。从 0.7.0 起，**SillyTavern 本体直接封装在
+完整安装版里**：无需单独安装酒馆、Git 或 Node，点一下"启动酒馆"即可在应用内使用。
 
-## Prerequisites
+功能一览：
 
-- Node.js `>=22.13.0`
+- 角色卡库：导入 PNG / WEBP / JSON（V2 与 V3/ccv3 规范）、书架、评分、收藏、标签
+  批量管理、详情补读与导出。
+- 内置酒馆：自带固定版本的 SillyTavern + 独立 Node 运行时，首启复制到用户目录，
+  之后以子进程方式运行，界面在应用内窗口打开，只监听 127.0.0.1。
+- 外部酒馆：沿用旧版方式，自动探测 / 手动指定安装目录，调用已有 `Start.bat`。
+  两种模式在"设置 → 酒馆运行方式"随时切换，数据互不影响。
+- 卡库自动备份（最多 5 份）与一键恢复；安装版支持在线自动更新。
 
-## Quick Start
+## 发行包
+
+| 包 | 内容 | 适用 |
+| --- | --- | --- |
+| `TavernCardLibrary-Setup-<版本>-x64.exe` | 完整版，内置 SillyTavern（安装后约多占 400MB 磁盘） | 没装过酒馆、想开箱即用 |
+| `TavernCardLibrary-Portable-<版本>-x64.exe` | 精简版，不含内置酒馆 | 已有酒馆安装、要便携使用 |
+
+便携版是自解压格式，每次启动都要解压资源，不适合携带几百 MB 的内置酒馆，因此
+内置版只出 NSIS 安装包；精简构建沿袭旧的 NSIS + 便携双目标。
+
+## 开发
+
+要求 Node.js `>= 22.13`。
 
 ```bash
 npm install
-npm run dev
-npm run build
+npm run dev              # Web 版（localhost:3000）
+npm run desktop:dev      # 桌面版开发（Electron）
+npm run desktop:check    # 渲染端构建 + 主进程语法检查
+npm test
 ```
 
-This starter does not use `wrangler.jsonc`.
+## 打包
 
-## Included Shape
+```bash
+# 完整版（内置酒馆，仅 NSIS）：
+# 先下载固定版本的 SillyTavern 1.19.0 源码与 Node v22.23.3 并安装依赖
+# （幂等，产物在 resources/sillytavern，已 gitignore），再打包。
+npm run desktop:pack
 
-- edit site code under `app/`
-- `.openai/hosting.json` declares optional Sites D1 and R2 bindings
-- `vite.config.ts` simulates declared bindings for local development
-- `db/schema.ts` starts intentionally empty
-- `drizzle.config.ts` supports local migration generation when needed
+# 精简版（无内置酒馆，NSIS + 便携）：
+npm run desktop:pack:lite
 
-## Workspace Auth Headers
-
-Signed-in visitors receive both `oai-authenticated-user-id` and `oai-authenticated-user-email`. Private Sites require every visitor to sign in; public Sites may also have anonymous visitors, for whom neither header is present.
-
-The user ID is stable for the same user on the same Site and different across Sites. Email and name are intended for display or contact purposes.
-
-SIWC-authenticated workspace sites may also receive
-`oai-authenticated-user-full-name` when the user's SIWC profile has a non-empty
-`name` claim. The full-name value is percent-encoded UTF-8 and is accompanied by
-`oai-authenticated-user-full-name-encoding: percent-encoded-utf-8`.
-
-Treat the full name as optional and fall back to email when it is absent:
-
-```tsx
-import { headers } from "next/headers";
-
-export default async function Home() {
-  const requestHeaders = await headers();
-  const userId = requestHeaders.get("oai-authenticated-user-id");
-  const email = requestHeaders.get("oai-authenticated-user-email");
-  const encodedFullName = requestHeaders.get("oai-authenticated-user-full-name");
-  const fullName =
-    encodedFullName &&
-    requestHeaders.get("oai-authenticated-user-full-name-encoding") ===
-      "percent-encoded-utf-8"
-      ? decodeURIComponent(encodedFullName)
-      : null;
-
-  const displayName = fullName ?? email;
-  // ...
-}
+# 只重新组装内置酒馆资源（支持 --force 强制重建）：
+npm run fetch:st
 ```
 
-## Optional Dispatch-Owned ChatGPT Sign-In
+electron-builder 配置在 `electron-builder.config.cjs`：检测到
+`resources/sillytavern/embedded.json` 时自动附带内置资源并只出 NSIS 目标。
 
-Import the ready-to-use helpers from `app/chatgpt-auth.ts` when the site needs
-optional or required ChatGPT sign-in:
+### 内置酒馆的运行方式
 
-- Use `getChatGPTUser()` for optional signed-in UI.
-- Use `requireChatGPTUser(returnTo)` for server-rendered pages that should send
-  anonymous visitors through Sign in with ChatGPT.
-- Use `chatGPTSignInPath(returnTo)` and `chatGPTSignOutPath(returnTo)` for
-  browser links or actions.
-- Pass a same-origin relative `returnTo` path for the destination after sign-in
-  or sign-out. The helper validates and safely encodes it.
-- Mark protected pages with `export const dynamic = "force-dynamic"` because
-  they depend on per-request identity headers.
+- 打包资源放在安装目录 `resources/sillytavern/`（`st/` 源码 + `node/` 运行时），
+  可能只读；首次启动复制到用户数据目录 `sillytavern/` 作为运行副本。
+- 运行副本的 `data/`、`config.yaml`、`secrets.json`、`plugins/` 与第三方扩展目录
+  属于用户数据，应用升级时自动保留，其余文件按新版本覆盖。
+- 用随包的 `node.exe` 以子进程方式运行 `server.js`（不依赖系统 Node，也避免与
+  Electron ABI 相关的原生模块问题）；配置固定 `listen: false`、不自动开浏览器。
+- 内置酒馆随应用退出而关闭；外部酒馆仍是独立进程，不受影响。
 
-Dispatch owns `/signin-with-chatgpt`, `/signout-with-chatgpt`, `/callback`, the
-OAuth cookies, and identity header injection. Do not implement app routes for
-those reserved paths. Routes that do not import and call the helper remain
-anonymous-compatible.
+## 许可与第三方组件
 
-SIWC establishes identity only; it does not prove workspace membership. Use the
-Sites hosting platform's access policy controls for workspace-wide restrictions,
-or enforce explicit server-side membership or allowlist checks.
-
-Use SIWC for account pages, user-specific dashboards, saved records, and write
-actions tied to the current ChatGPT user. Leave public content anonymous.
-
-## Useful Commands
-
-- `npm run dev`: start local development
-- `npm run build`: verify the vinext build output
-- `npm test`: build the starter and verify its rendered loading skeleton
-- `npm run db:generate`: generate Drizzle migrations after schema changes
-
-## Learn More
-
-- [vinext Documentation](https://github.com/cloudflare/vinext)
-- [Drizzle D1 Guide](https://orm.drizzle.team/docs/get-started/d1-new)
+内置的 SillyTavern 以 AGPL-3.0 许可发布，随包提供其完整对应源码；随包的 Node.js
+运行时以 MIT 许可发布。详见 [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md)。
+本项目与 SillyTavern 官方没有隶属或背书关系。

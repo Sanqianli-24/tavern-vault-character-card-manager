@@ -1,6 +1,6 @@
 {
   "name": "sillytavern-character-library",
-  "version": "0.6.0",
+  "version": "0.7.0",
   "description": "中文 SillyTavern 角色卡管理器与一键启动器",
   "author": "LongShuo",
   "private": true,
@@ -15,7 +15,9 @@
     "desktop:build": "vite build --config vite.desktop.config.ts",
     "desktop:dev": "npm run desktop:build && electron .",
     "desktop:check": "npm run desktop:build && node --check desktop/main.cjs && node --check desktop/preload.cjs",
-    "desktop:pack": "npm run desktop:build && electron-builder --win nsis portable",
+    "desktop:pack": "node scripts/fetch-sillytavern.mjs && npm run desktop:build && electron-builder --win --config electron-builder.config.cjs",
+    "desktop:pack:lite": "npm run desktop:build && electron-builder --win --config electron-builder.config.cjs",
+    "fetch:st": "node scripts/fetch-sillytavern.mjs",
     "test": "npm run build && node --test tests/character-parser.test.mjs tests/rendered-html.test.mjs",
     "lint": "eslint . --ignore-pattern dist --ignore-pattern .next",
     "db:generate": "drizzle-kit generate"
@@ -51,60 +53,6 @@
     "vinext": "1.0.0-beta.2",
     "vite": "8.0.13",
     "wrangler": "4.92.0"
-  },
-  "build": {
-    "appId": "cn.sillytavern.characterlibrary",
-    "productName": "酒馆角色卡库",
-    "asar": true,
-    "npmRebuild": false,
-    "directories": {
-      "output": "release"
-    },
-    "publish": [
-      {
-        "provider": "github",
-        "owner": "Sanqianli-24",
-        "repo": "tavern-vault-character-card-manager"
-      }
-    ],
-    "files": [
-      "desktop/main.cjs",
-      "desktop/preload.cjs",
-      "desktop/character-parser.cjs",
-      "desktop-dist/**/*",
-      "package.json"
-    ],
-    "win": {
-      "icon": "desktop/icon.ico",
-      "target": [
-        {
-          "target": "nsis",
-          "arch": [
-            "x64"
-          ]
-        },
-        {
-          "target": "portable",
-          "arch": [
-            "x64"
-          ]
-        }
-      ]
-    },
-    "nsis": {
-      "artifactName": "TavernCardLibrary-Setup-${version}-${arch}.${ext}",
-      "oneClick": false,
-      "allowToChangeInstallationDirectory": true,
-      "createDesktopShortcut": true,
-      "createStartMenuShortcut": true,
-      "shortcutName": "酒馆角色卡库",
-      "installerLanguages": [
-        "zh_CN"
-      ]
-    },
-    "portable": {
-      "artifactName": "TavernCardLibrary-Portable-${version}-${arch}.${ext}"
-    }
   },
   "type": "module"
 }

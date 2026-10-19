@@ -45,3 +45,6 @@ yarn-error.log*
 
 # zcode local artifacts
 /.zcode/
+
+# 内置 SillyTavern 运行时（构建时由 scripts/fetch-sillytavern.mjs 组装）
+/resources/

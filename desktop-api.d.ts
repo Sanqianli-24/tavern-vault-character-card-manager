@@ -70,6 +70,11 @@ type DesktopSettings = {
   dirExists: boolean;
   appVersion: string;
   isPortable: boolean;
+  preferEmbedded: boolean;
+  embeddedAvailable: boolean;
+  embeddedVersion: string | null;
+  embeddedRuntimeReady: boolean;
+  tavernEmbedded: boolean;
 };
 
 type DesktopSettingsResult = {
@@ -118,7 +123,7 @@ interface Window {
     exportCard(id: string): Promise<DesktopExportResult>;
     exportCards(ids: string[]): Promise<DesktopBulkExportResult>;
     getSettings(): Promise<DesktopSettings>;
-    setSettings(patch: { sillyTavernDir: string }): Promise<DesktopSettingsResult>;
+    setSettings(patch: { sillyTavernDir?: string; preferEmbedded?: boolean }): Promise<DesktopSettingsResult>;
     pickDirectory(): Promise<string | null>;
     listBackups(): Promise<DesktopBackup[]>;
     createBackup(): Promise<{ ok: boolean; name?: string }>;
@@ -128,6 +133,8 @@ interface Window {
     onUpdateStatus(callback: (status: DesktopUpdateStatus) => void): () => void;
     getTavernStatus(): Promise<TavernLaunchProgress>;
     startSillyTavern(): Promise<TavernLaunchProgress>;
+    openTavernWindow(): Promise<{ ok: boolean; port?: number; error?: string }>;
+    openTavernBrowser(): Promise<{ ok: boolean; port?: number; error?: string }>;
     onTavernProgress(callback: (progress: TavernLaunchProgress) => void): () => void;
   };
 }

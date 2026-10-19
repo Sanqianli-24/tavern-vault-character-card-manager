@@ -1,6 +1,7 @@
 "use client";
 
 import { memo, useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore, type ChangeEvent, type DragEvent, type KeyboardEvent as ReactKeyboardEvent, type MouseEvent as ReactMouseEvent } from "react";
+import { parseCharacterCardJson, parseCharacterCardPng, type ParsedCardContent } from "./card-parser";
 import { THEME_STORAGE_KEY, THEMES, isThemeName, themeMeta, type ThemeName } from "./themes";
 
 type CharacterCard = {
@@ -121,6 +122,8 @@ const CharacterCardItem = memo(function CharacterCardItem({
   card, selected, bulkSelected, onOpen, onToggleBulk, onUpdate, onCardMenu,
 }: CardItemProps) {
   function handleKey(event: ReactKeyboardEvent<HTMLElement>) {
+    // 只响应卡片本身的按键；内部按钮（收藏/评分/菜单）自己处理 Enter/Space
+    if (event.target !== event.currentTarget) return;
     if (event.key === "Enter" || event.key === " ") {
       event.preventDefault();
       onOpen(card.id);
@@ -144,7 +147,7 @@ const CharacterCardItem = memo(function CharacterCardItem({
       >
         <i>{bulkSelected ? "✓" : ""}</i>
       </button>
-      <div className="card-art" style={{ "--card-accent": card.accent ?? "#7158c9" } as React.CSSProperties}>
+      <div className="card-art" style={{ "--card-accent": card.accent || "var(--accent)" } as React.CSSProperties}>
         {card.image ? <img src={card.image} alt="" loading="lazy" decoding="async" /> : <span className="initials">{initials(card.name)}</span>}
         <span className="format-badge">{card.fileType.includes("json") ? "JSON" : card.fileType.includes("webp") ? "WEBP" : "PNG"}</span>
         <button
@@ -227,11 +230,41 @@ export default function CharacterManager() {
   const folderInputRef = useRef<HTMLInputElement>(null);
   const searchInputRef = useRef<HTMLInputElement>(null);
   const pendingUpdatesRef = useRef<Map<string, { timer: number; patch: Partial<CharacterCard> }>>(new Map());
-  const pendingFilesRef = useRef<Map<string, File>>(new Map());
+  const pendingFilesRef = useRef<Map<string, { file: File; content: ParsedCardContent | null }>>(new Map());
+  const lastUpdateEventRef = useRef<string>("");
   const dragDepthRef = useRef(0);
 
   const showToast = useCallback((text: string, kind: "success" | "error" = "success") => {
     setToastState({ text, kind });
+  }, []);
+
+  const clearUnsavedState = useCallback((ids?: Iterable<string>) => {
+    if (ids) {
+      for (const id of ids) pendingFilesRef.current.delete(id);
+      setUnsavedIds((current) => {
+        const next = new Set(current);
+        for (const id of ids) next.delete(id);
+        return next;
+      });
+      return;
+    }
+    pendingFilesRef.current.clear();
+    setUnsavedIds(new Set());
+  }, []);
+
+  const cancelPendingSaves = useCallback((ids?: string[]) => {
+    if (!ids) {
+      for (const entry of pendingUpdatesRef.current.values()) window.clearTimeout(entry.timer);
+      pendingUpdatesRef.current.clear();
+      return;
+    }
+    for (const id of ids) {
+      const entry = pendingUpdatesRef.current.get(id);
+      if (entry) {
+        window.clearTimeout(entry.timer);
+        pendingUpdatesRef.current.delete(id);
+      }
+    }
   }, []);
 
   const loadCards = useCallback(async () => {
@@ -240,20 +273,29 @@ export default function CharacterManager() {
       try {
         const stored = await window.desktopAPI.listCards();
         setCards(stored);
-      } catch {
-        setLoadError("读取本地卡库失败");
+        return true;
+      } catch (error) {
+        setLoadError(error instanceof Error ? error.message : "读取本地卡库失败");
+        return false;
       }
-      return;
     }
     try {
       const response = await fetch("/api/cards");
       const data = await response.json() as { cards?: CharacterCard[]; error?: string };
       if (!response.ok || data.error) throw new Error(data.error || "读取失败");
-      setCards(data.cards ?? []);
+      setCards((current) => {
+        for (const card of current) {
+          if (card.id.startsWith("local-")) revokeObjectUrl(card.image);
+        }
+        return data.cards ?? [];
+      });
+      clearUnsavedState();
+      return true;
     } catch (error) {
       setLoadError(error instanceof Error ? error.message : "读取失败");
+      return false;
     }
-  }, []);
+  }, [clearUnsavedState]);
 
   const refreshSettings = useCallback(async () => {
     if (!window.desktopAPI) return null;
@@ -283,14 +325,17 @@ export default function CharacterManager() {
     if (!window.desktopAPI?.onUpdateStatus) return undefined;
     return window.desktopAPI.onUpdateStatus((status) => {
       setUpdateStatus(status);
-      if (status.event === "available") showToast(`发现新版本 v${status.version ?? ""}，正在后台下载…`);
-      if (status.event === "downloaded") showToast(`新版本 v${status.version ?? ""} 已就绪，重启后生效`);
+      const kind = status.event;
+      if (kind === lastUpdateEventRef.current) return;
+      lastUpdateEventRef.current = kind;
+      if (kind === "available") showToast(`发现新版本 v${status.version ?? ""}，正在后台下载…`);
+      if (kind === "downloaded") showToast(`新版本 v${status.version ?? ""} 已就绪，重启后生效`);
     });
   }, [showToast]);
 
   useEffect(() => {
     const stored = window.localStorage.getItem(THEME_STORAGE_KEY);
-    if ((stored === "dark" || stored === "fresh") && readTheme() !== stored) applyTheme(stored);
+    if (isThemeName(stored) && readTheme() !== stored) applyTheme(stored);
   }, []);
 
   useEffect(() => {
@@ -335,7 +380,6 @@ export default function CharacterManager() {
   }, [allTags, tagSearch]);
 
   const totalSize = useMemo(() => cards.reduce((sum, card) => sum + (card.size || 0), 0), [cards]);
-  const latestModified = useMemo(() => cards.reduce<string>((latest, card) => card.modifiedAt > latest ? card.modifiedAt : latest, ""), [cards]);
 
   const filteredCards = useMemo(() => {
     const lowered = debouncedQuery.trim().toLocaleLowerCase("zh-CN");
@@ -373,19 +417,14 @@ export default function CharacterManager() {
 
   const filteredRef = useRef(filteredCards);
   const draggingRef = useRef(dragging);
+  const latestModified = useMemo(() => filteredCards.reduce<string>((latest, card) => card.modifiedAt > latest ? card.modifiedAt : latest, ""), [filteredCards]);
   useEffect(() => {
     filteredRef.current = filteredCards;
     draggingRef.current = dragging;
   });
 
   const closeTopModal = useCallback((): boolean => {
-    let closed = true;
-    setBulkModal((current) => {
-      if (current) return null;
-      closed = false;
-      return current;
-    });
-    if (!closed) return true;
+    if (bulkModal) { setBulkModal(null); return true; }
     if (confirmDeleteId) { setConfirmDeleteId(null); return true; }
     if (settingsOpen) { setSettingsOpen(false); return true; }
     if (backupsOpen) { setBackupsOpen(false); return true; }
@@ -394,7 +433,7 @@ export default function CharacterManager() {
     if (tavernPanelOpen) { setTavernPanelOpen(false); return true; }
     if (tagPickerOpen) { setTagPickerOpen(false); return true; }
     return false;
-  }, [aboutOpen, backupsOpen, confirmDeleteId, newShelfOpen, settingsOpen, tagPickerOpen, tavernPanelOpen]);
+  }, [aboutOpen, backupsOpen, bulkModal, confirmDeleteId, newShelfOpen, settingsOpen, tagPickerOpen, tavernPanelOpen]);
 
   const closeTopModalRef = useRef(closeTopModal);
   useEffect(() => {
@@ -403,12 +442,6 @@ export default function CharacterManager() {
 
   useEffect(() => {
     function onKeyDown(event: globalThis.KeyboardEvent) {
-      if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "k") {
-        event.preventDefault();
-        searchInputRef.current?.focus();
-        searchInputRef.current?.select();
-        return;
-      }
       if (event.key === "Escape") {
         setCardMenu(null);
         setTopMenuOpen(false);
@@ -421,8 +454,15 @@ export default function CharacterManager() {
         }
         return;
       }
+      // 输入框内不劫持 Ctrl+K / Ctrl+A（与搜索框全选等原生行为一致）
       const target = event.target as HTMLElement | null;
-      if (target && ["INPUT", "TEXTAREA", "SELECT"].includes(target.tagName)) return;
+      if (target && (["INPUT", "TEXTAREA", "SELECT"].includes(target.tagName) || target.isContentEditable)) return;
+      if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "k") {
+        event.preventDefault();
+        searchInputRef.current?.focus();
+        searchInputRef.current?.select();
+        return;
+      }
       if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "a") {
         event.preventDefault();
         setBulkSelected(new Set(filteredRef.current.map((card) => card.id)));
@@ -467,6 +507,8 @@ export default function CharacterManager() {
       method: "PATCH",
       headers: { "content-type": "application/json" },
       body: JSON.stringify(merged),
+    }).then((response) => {
+      if (!response.ok) throw new Error(`保存失败（HTTP ${response.status}）`);
     }));
   }, [showToast]);
 
@@ -491,7 +533,22 @@ export default function CharacterManager() {
       window.desktopAPI.hydrateCard(id)
         .then((hydrated) => {
           if (!hydrated) return;
-          setCards((current) => current.map((card) => card.id === hydrated.id ? { ...card, ...hydrated } : card));
+          setCards((current) => {
+            // 已删除的卡不合并；已有内容只补空字段，避免晚到的快照覆盖新编辑
+            if (!current.some((card) => card.id === hydrated.id)) return current;
+            return current.map((card) => {
+              if (card.id !== hydrated.id) return card;
+              const merged: CharacterCard = { ...card };
+              for (const [key, value] of Object.entries(hydrated as Record<string, unknown>)) {
+                if (value === null || value === undefined || value === "") continue;
+                const current2 = (merged as Record<string, unknown>)[key];
+                if (current2 === null || current2 === undefined || current2 === "" || (Array.isArray(value) && Array.isArray(current2) && current2.length === 0)) {
+                  (merged as Record<string, unknown>)[key] = value;
+                }
+              }
+              return merged;
+            });
+          });
         })
         .catch(() => undefined);
     }
@@ -513,7 +570,17 @@ export default function CharacterManager() {
       : [...current, tag]);
   }
 
-  function postCardFile(file: File, card: CharacterCard) {
+  function readCardContent(file: File): Promise<ParsedCardContent | null> {
+    if (/\.json$/i.test(file.name)) {
+      return file.text().then(parseCharacterCardJson).catch(() => null);
+    }
+    if (/\.png$/i.test(file.name)) {
+      return file.arrayBuffer().then(parseCharacterCardPng).catch(() => null);
+    }
+    return Promise.resolve(null);
+  }
+
+  function postCardFile(file: File, card: CharacterCard, content: ParsedCardContent | null) {
     const form = new FormData();
     form.set("file", file);
     form.set("name", card.name);
@@ -521,6 +588,20 @@ export default function CharacterManager() {
     form.set("fileType", card.fileType);
     form.set("sourcePath", card.sourcePath);
     form.set("bookshelf", card.bookshelf || "未分类");
+    if (content) {
+      form.set("description", content.description);
+      form.set("personality", content.personality);
+      form.set("scenario", content.scenario);
+      form.set("firstMessage", content.firstMes);
+      form.set("exampleDialogue", content.mesExample);
+      form.set("creatorNotes", content.creatorNotes);
+      form.set("systemPrompt", content.systemPrompt);
+      form.set("postHistoryInstructions", content.postHistoryInstructions);
+      form.set("creator", content.creator);
+      form.set("characterVersion", content.characterVersion);
+      form.set("tags", JSON.stringify(content.tags));
+      form.set("alternateGreetings", JSON.stringify(content.alternateGreetings));
+    }
     return fetch("/api/cards", { method: "POST", body: form })
       .then(async (response) => {
         if (!response.ok) throw new Error("上传失败");
@@ -531,114 +612,143 @@ export default function CharacterManager() {
   }
 
   async function importFiles(fileList: FileList | File[]) {
+    if (importing) return;
     const accepted = Array.from(fileList).filter((file) => /\.(png|webp|json)$/i.test(file.name));
     if (!accepted.length) {
       showToast("请选择 PNG、WEBP 或 JSON 角色卡", "error");
       return;
     }
     setImporting(true);
-    if (window.desktopAPI) {
-      try {
-        const entries: DesktopImportEntry[] = [];
-        for (const file of accepted) {
-          let parsedName = fileBaseName(file.name);
-          if (/\.json$/i.test(file.name)) {
-            try {
-              const json = JSON.parse(await file.text()) as { name?: string; data?: { name?: string } };
-              parsedName = json.data?.name || json.name || parsedName;
-            } catch {
-              // The filename remains the display name for malformed JSON.
-            }
-          }
-          entries.push({ file, suggestedName: parsedName, sourcePath: file.webkitRelativePath || file.name });
-        }
-        const result = await window.desktopAPI.importCards(entries);
-        if (!result.cards.length) throw new Error("没有可导入的文件");
-        setCards((current) => [...result.cards, ...current]);
-        setSelectedId(result.cards[0].id);
-        setDetailOpen(true);
-        setActiveShelf("全部角色");
-        const parts = [`已导入 ${result.cards.length} 张角色卡`];
-        if (result.duplicates) parts.push(`跳过 ${result.duplicates} 张重复`);
-        if (result.skipped) parts.push(`${result.skipped} 张读取失败`);
-        showToast(parts.join("，"));
-      } catch (error) {
-        showToast(error instanceof Error && error.message === "没有可导入的文件" ? "没有可导入的文件（可能都是重复卡）" : "导入失败，请确认文件仍然存在", "error");
-      } finally {
-        setImporting(false);
-      }
-      return;
-    }
-    let added = 0;
-    let failed = 0;
-    for (const file of accepted) {
-      let parsedName = fileBaseName(file.name);
-      if (/\.json$/i.test(file.name)) {
+    try {
+      if (window.desktopAPI) {
         try {
-          const json = JSON.parse(await file.text()) as { name?: string; data?: { name?: string } };
-          parsedName = json.data?.name || json.name || parsedName;
+          const entries: DesktopImportEntry[] = [];
+          for (const file of accepted) {
+            let parsedName = fileBaseName(file.name);
+            if (/\.json$/i.test(file.name)) {
+              try {
+                const content = await readCardContent(file);
+                if (content?.name) parsedName = content.name;
+              } catch {
+                // The filename remains the display name for malformed JSON.
+              }
+            }
+            entries.push({ file, suggestedName: parsedName, sourcePath: file.webkitRelativePath || file.name });
+          }
+          const result = await window.desktopAPI.importCards(entries);
+          if (!result.cards.length) throw new Error("没有可导入的文件");
+          setCards((current) => [...result.cards, ...current]);
+          setSelectedId(result.cards[0].id);
+          setDetailOpen(true);
+          setActiveShelf("全部角色");
+          const parts = [`已导入 ${result.cards.length} 张角色卡`];
+          if (result.duplicates) parts.push(`跳过 ${result.duplicates} 张重复`);
+          if (result.skipped) parts.push(`${result.skipped} 张读取失败`);
+          showToast(parts.join("，"));
+        } catch (error) {
+          showToast(error instanceof Error && error.message === "没有可导入的文件" ? "没有可导入的文件（可能都是重复卡）" : "导入失败，请确认文件仍然存在", "error");
+        }
+        return;
+      }
+      let added = 0;
+      let failed = 0;
+      for (const file of accepted) {
+        const content = await readCardContent(file);
+        const parsedName = content?.name?.trim() || fileBaseName(file.name);
+        const now = new Date().toISOString();
+        const localId = `local-${typeof crypto.randomUUID === "function" ? crypto.randomUUID() : `${Date.now()}-${Math.random().toString(36).slice(2)}`}`;
+        const localCard: CharacterCard = {
+          id: localId,
+          name: parsedName,
+          fileName: file.name,
+          fileType: file.type || (/\.json$/i.test(file.name) ? "application/json" : /\.webp$/i.test(file.name) ? "image/webp" : "image/png"),
+          size: file.size,
+          rating: 0,
+          tags: content?.tags ?? [],
+          bookshelf: "未分类",
+          image: file.type.startsWith("image/") ? URL.createObjectURL(file) : "",
+          description: content?.description?.trim() || "刚刚导入的角色卡，等待你补充标签与简介。",
+          personality: content?.personality ?? "",
+          scenario: content?.scenario ?? "",
+          firstMessage: content?.firstMes ?? "",
+          exampleDialogue: content?.mesExample ?? "",
+          creatorNotes: content?.creatorNotes ?? "",
+          systemPrompt: content?.systemPrompt ?? "",
+          postHistoryInstructions: content?.postHistoryInstructions ?? "",
+          alternateGreetings: content?.alternateGreetings ?? [],
+          creator: content?.creator ?? "",
+          characterVersion: content?.characterVersion ?? "",
+          sourcePath: file.webkitRelativePath || file.name,
+          createdAt: now,
+          modifiedAt: now,
+          accent: "#7557c5",
+        };
+        setCards((current) => [localCard, ...current]);
+        setSelectedId(localId);
+        setDetailOpen(true);
+        added += 1;
+
+        try {
+          const saved = await postCardFile(file, localCard, content);
+          revokeObjectUrl(localCard.image);
+          setCards((current) => current.map((card) => card.id === localId ? saved : card));
+          setSelectedId((current) => current === localId ? saved.id : current);
         } catch {
-          // Keep the filename when a JSON card cannot be parsed.
+          failed += 1;
+          pendingFilesRef.current.set(localId, { file, content });
+          setUnsavedIds((current) => new Set(current).add(localId));
         }
       }
-      const now = new Date().toISOString();
-      const localId = `local-${crypto.randomUUID()}`;
-      const localCard: CharacterCard = {
-        id: localId,
-        name: parsedName,
-        fileName: file.name,
-        fileType: file.type || (/\.json$/i.test(file.name) ? "application/json" : "image/png"),
-        size: file.size,
-        rating: 0,
-        tags: [],
-        bookshelf: "未分类",
-        image: file.type.startsWith("image/") ? URL.createObjectURL(file) : "",
-        description: "刚刚导入的角色卡，等待你补充标签与简介。",
-        sourcePath: file.webkitRelativePath || file.name,
-        createdAt: now,
-        modifiedAt: now,
-        accent: "#7557c5",
-      };
-      setCards((current) => [localCard, ...current]);
-      setSelectedId(localId);
-      setDetailOpen(true);
-      added += 1;
-
-      try {
-        const saved = await postCardFile(file, localCard);
-        revokeObjectUrl(localCard.image);
-        setCards((current) => current.map((card) => card.id === localId ? saved : card));
-        setSelectedId((current) => current === localId ? saved.id : current);
-      } catch {
-        failed += 1;
-        pendingFilesRef.current.set(localId, file);
-        setUnsavedIds((current) => new Set(current).add(localId));
+      setActiveShelf("全部角色");
+      if (failed) {
+        showToast(`已导入 ${added - failed} 张，${failed} 张保存失败（已标记为未保存，可在详情面板重试）`, "error");
+      } else {
+        showToast(`已导入 ${added} 张角色卡`);
       }
-    }
-    setImporting(false);
-    setActiveShelf("全部角色");
-    if (failed) {
-      showToast(`已导入 ${added - failed} 张，${failed} 张保存失败（已标记为未保存，可在详情面板重试）`, "error");
-    } else {
-      showToast(`已导入 ${added} 张角色卡`);
+    } finally {
+      setImporting(false);
     }
   }
 
   async function retrySave(id: string) {
-    const file = pendingFilesRef.current.get(id);
+    const pending = pendingFilesRef.current.get(id);
     const card = cards.find((item) => item.id === id);
-    if (!file || !card) return;
+    if (!pending || !card) return;
     try {
-      const saved = await postCardFile(file, card);
+      let saved = await postCardFile(pending.file, card, pending.content);
+      // 未保存期间的本机编辑（名称/评分/标签/描述等）需要同步到云端，
+      // POST 只落解析出的原始内容。
+      try {
+        const response = await fetch(`/api/cards/${saved.id}`, {
+          method: "PATCH",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            name: card.name,
+            rating: card.rating,
+            favorite: card.favorite === true,
+            tags: card.tags,
+            bookshelf: card.bookshelf,
+            description: card.description,
+            personality: card.personality ?? "",
+            scenario: card.scenario ?? "",
+            firstMessage: card.firstMessage ?? "",
+            exampleDialogue: card.exampleDialogue ?? "",
+            creatorNotes: card.creatorNotes ?? "",
+            systemPrompt: card.systemPrompt ?? "",
+            postHistoryInstructions: card.postHistoryInstructions ?? "",
+          }),
+        });
+        if (response.ok) {
+          const result = await response.json() as { card: CharacterCard | null };
+          if (result.card) saved = result.card;
+        }
+      } catch {
+        // 同步编辑失败时保留基础保存结果，卡片不再标记未保存
+      }
       revokeObjectUrl(card.image);
       setCards((current) => current.map((item) => item.id === id ? saved : item));
       setSelectedId((current) => current === id ? saved.id : current);
-      pendingFilesRef.current.delete(id);
-      setUnsavedIds((current) => {
-        const next = new Set(current);
-        next.delete(id);
-        return next;
-      });
+      clearUnsavedState([id]);
       showToast("角色卡已保存到云端");
     } catch {
       showToast("重试保存失败，请检查网络后再试", "error");
@@ -681,26 +791,48 @@ export default function CharacterManager() {
     showToast(`已创建书架「${value}」`);
   }
 
-  function deleteCard(id: string) {
+  async function deleteCard(id: string) {
     const card = cards.find((item) => item.id === id);
     if (!card) return;
-    if (window.desktopAPI) {
-      window.desktopAPI.deleteCards([id]).catch(() => showToast("删除失败", "error"));
-    } else if (!id.startsWith("local-")) {
-      fetch(`/api/cards/${id}`, { method: "DELETE" }).catch(() => undefined);
+    try {
+      if (window.desktopAPI) {
+        await window.desktopAPI.deleteCards([id]);
+      } else if (!id.startsWith("local-")) {
+        const response = await fetch(`/api/cards/${id}`, { method: "DELETE" });
+        if (!response.ok && response.status !== 404) throw new Error(`HTTP ${response.status}`);
+      }
+    } catch {
+      showToast("删除失败，请重试", "error");
+      setConfirmDeleteId(null);
+      setCardMenu(null);
+      return;
     }
+    cancelPendingSaves([id]);
     revokeObjectUrl(card.image);
-    pendingFilesRef.current.delete(id);
-    setUnsavedIds((current) => {
-      const next = new Set(current);
-      next.delete(id);
-      return next;
-    });
+    clearUnsavedState([id]);
     setCards((current) => current.filter((item) => item.id !== id));
     if (selectedId === id) setSelectedId("");
     setConfirmDeleteId(null);
     setCardMenu(null);
     showToast("已删除角色卡");
+  }
+
+  function clientCardData(card: CharacterCard) {
+    return {
+      name: card.name || card.fileName || "未命名角色",
+      description: card.description || "",
+      personality: card.personality || "",
+      scenario: card.scenario || "",
+      first_mes: card.firstMessage || "",
+      mes_example: card.exampleDialogue || "",
+      creator_notes: card.creatorNotes || "",
+      system_prompt: card.systemPrompt || "",
+      post_history_instructions: card.postHistoryInstructions || "",
+      alternate_greetings: card.alternateGreetings || [],
+      creator: card.creator || "",
+      character_version: card.characterVersion || "",
+      tags: card.tags || [],
+    };
   }
 
   function exportCard(id: string) {
@@ -716,10 +848,26 @@ export default function CharacterManager() {
       return;
     }
     const anchor = window.document.createElement("a");
-    anchor.href = card.image
-      ? `/api/cards/file/${id}?download=1`
-      : `/api/cards/file/${id}?format=json&download=1`;
     anchor.rel = "noopener";
+    if (card.id.startsWith("local-")) {
+      // 未保存的卡片直接用本机数据导出：图片用 blob，否则生成 JSON
+      if (card.image) {
+        anchor.href = card.image;
+        anchor.download = card.fileName || "character-card";
+      } else {
+        const blob = new Blob(
+          [JSON.stringify({ spec: "chara_card_v2", spec_version: "2.0", data: clientCardData(card) }, null, 2)],
+          { type: "application/json" },
+        );
+        anchor.href = URL.createObjectURL(blob);
+        anchor.download = `${(card.name || "角色卡").replace(/[\\/:*?"<>|]/g, "_").slice(0, 80)}.json`;
+        window.setTimeout(() => URL.revokeObjectURL(anchor.href), 30000);
+      }
+    } else {
+      anchor.href = card.image
+        ? `/api/cards/file/${id}?download=1`
+        : `/api/cards/file/${id}?format=json&download=1`;
+    }
     window.document.body.appendChild(anchor);
     anchor.click();
     anchor.remove();
@@ -776,7 +924,7 @@ export default function CharacterManager() {
     try {
       const dir = await window.desktopAPI.pickDirectory();
       if (!dir) return;
-      const result = await window.desktopAPI.setSettings({ sillyTavernDir: dir });
+      const result = await window.desktopAPI.setSettings({ sillyTavernDir: dir, preferEmbedded: false });
       if (!result.ok) {
         showToast(result.error || "设置目录失败", "error");
         return;
@@ -786,6 +934,48 @@ export default function CharacterManager() {
       showToast("已更新酒馆目录");
     } catch {
       showToast("选择目录失败", "error");
+    }
+  }
+
+  async function switchTavernMode(embedded: boolean) {
+    if (!window.desktopAPI) return;
+    try {
+      const result = await window.desktopAPI.setSettings({ preferEmbedded: embedded });
+      if (!result.ok) {
+        showToast(result.error || "切换失败", "error");
+        return;
+      }
+      await refreshSettings();
+      setTavernProgress((current) => ({
+        ...current,
+        phase: "idle",
+        progress: 0,
+        message: embedded ? "已切换为内置酒馆" : "已切换为外部酒馆目录",
+        detail: `等待启动 ${result.sillyTavernDir}`,
+      }));
+      showToast(embedded ? "已切换为内置酒馆，点击启动即可使用" : "已切换为外部酒馆目录");
+    } catch {
+      showToast("切换失败", "error");
+    }
+  }
+
+  async function openTavernInApp() {
+    if (!window.desktopAPI) return;
+    try {
+      const result = await window.desktopAPI.openTavernWindow();
+      if (!result.ok) showToast(result.error || "酒馆尚未运行", "error");
+    } catch {
+      showToast("打开酒馆窗口失败", "error");
+    }
+  }
+
+  async function openTavernInBrowser() {
+    if (!window.desktopAPI) return;
+    try {
+      const result = await window.desktopAPI.openTavernBrowser();
+      if (!result.ok) showToast(result.error || "酒馆尚未运行", "error");
+    } catch {
+      showToast("打开浏览器失败", "error");
     }
   }
 
@@ -822,7 +1012,14 @@ export default function CharacterManager() {
     try {
       const result = await window.desktopAPI.restoreBackup(name);
       if (!result.ok) throw new Error(result.error || "恢复失败");
-      setCards(result.cards ?? []);
+      cancelPendingSaves();
+      clearUnsavedState();
+      setCards((current) => {
+        for (const card of current) {
+          if (card.id.startsWith("local-")) revokeObjectUrl(card.image);
+        }
+        return result.cards ?? [];
+      });
       setSelectedId("");
       setBackups(await window.desktopAPI.listBackups());
       setBackupsOpen(false);
@@ -841,6 +1038,8 @@ export default function CharacterManager() {
         setUpdateStatus({ event: "error", message: result.error });
       } else if (result.version) {
         setUpdateStatus({ event: "available", version: result.version });
+      } else {
+        setUpdateStatus({ event: "not-available" });
       }
     } finally {
       setUpdateChecking(false);
@@ -853,7 +1052,9 @@ export default function CharacterManager() {
   }
 
   function refreshCards() {
-    void loadCards().then(() => showToast("卡库已刷新"));
+    void loadCards().then((ok) => {
+      showToast(ok ? "卡库已刷新" : "刷新卡库失败，请重试", ok ? "success" : "error");
+    });
   }
 
   const bulkCards = cards.filter((card) => bulkSelected.has(card.id));
@@ -940,28 +1141,49 @@ export default function CharacterManager() {
     clearBulk();
   }
 
-  function applyBulkDelete() {
+  async function applyBulkDelete() {
     if (!bulkCards.length) return;
     const ids = bulkCards.map((card) => card.id);
     if (window.desktopAPI) {
-      window.desktopAPI.deleteCards(ids)
-        .catch(() => showToast("批量删除失败", "error"));
+      try {
+        await window.desktopAPI.deleteCards(ids);
+      } catch {
+        showToast("批量删除失败，正在重新加载卡库", "error");
+        void loadCards();
+        clearBulk();
+        return;
+      }
     } else {
+      const failedIds = new Set<string>();
       for (const card of bulkCards) {
-        if (!card.id.startsWith("local-")) {
-          fetch(`/api/cards/${card.id}`, { method: "DELETE" }).catch(() => undefined);
+        if (card.id.startsWith("local-")) continue;
+        try {
+          const response = await fetch(`/api/cards/${card.id}`, { method: "DELETE" });
+          if (!response.ok && response.status !== 404) failedIds.add(card.id);
+        } catch {
+          failedIds.add(card.id);
         }
       }
+      if (failedIds.size) {
+        const removed = bulkCards.filter((card) => !failedIds.has(card.id));
+        cancelPendingSaves(ids.filter((id) => !failedIds.has(id)));
+        for (const card of removed) {
+          revokeObjectUrl(card.image);
+          pendingFilesRef.current.delete(card.id);
+        }
+        clearUnsavedState(removed.map((card) => card.id));
+        setCards((current) => current.filter((card) => !bulkSelected.has(card.id) || failedIds.has(card.id)));
+        showToast(`已删除 ${removed.length} 张，${failedIds.size} 张删除失败已保留`, "error");
+        clearBulk();
+        return;
+      }
     }
+    cancelPendingSaves(ids);
     for (const card of bulkCards) {
       revokeObjectUrl(card.image);
       pendingFilesRef.current.delete(card.id);
     }
-    setUnsavedIds((current) => {
-      const next = new Set(current);
-      for (const id of ids) next.delete(id);
-      return next;
-    });
+    clearUnsavedState(ids);
     setCards((current) => current.filter((card) => !bulkSelected.has(card.id)));
     if (selectedId && bulkSelected.has(selectedId)) {
       const remaining = cards.find((card) => !bulkSelected.has(card.id));
@@ -1278,7 +1500,7 @@ export default function CharacterManager() {
             <button aria-label="关闭详情" onClick={() => setDetailOpen(false)}>×</button>
           </div>
           <div className="detail-scroll">
-            <div className="detail-cover" style={{ "--card-accent": selected.accent ?? "#7158c9" } as React.CSSProperties}>
+            <div className="detail-cover" style={{ "--card-accent": selected.accent || "var(--accent)" } as React.CSSProperties}>
               {selected.image ? <img src={selected.image} alt={selected.name} /> : <span className="initials">{initials(selected.name)}</span>}
               <span className="detail-format">{selected.fileType.includes("json") ? "JSON 角色卡" : "角色卡"}</span>
             </div>
@@ -1442,7 +1664,11 @@ export default function CharacterManager() {
             <div className="tavern-modal-header">
               <span className={`tavern-emblem phase-${tavernProgress.phase}`}>{tavernProgress.phase === "ready" ? "✓" : "▶"}</span>
               <div>
-                <small>{settings?.detectedDir || tavernProgress.detail}</small>
+                <small>
+                  {settings?.tavernEmbedded
+                    ? `内置酒馆${settings.embeddedVersion ? ` · SillyTavern ${settings.embeddedVersion}` : ""}`
+                    : settings?.detectedDir || tavernProgress.detail}
+                </small>
                 <h2 id="tavern-launch-title">{tavernProgress.message}</h2>
                 <p>{tavernProgress.detail}</p>
               </div>
@@ -1455,7 +1681,7 @@ export default function CharacterManager() {
 
             <div className="launch-steps">
               {[
-                ["检查安装目录", 8],
+                [settings?.tavernEmbedded ? "准备内置酒馆" : "检查安装目录", 8],
                 ["启动酒馆服务", 28],
                 ["等待酒馆服务", 36],
                 ["端口就绪并打开", 100],
@@ -1472,19 +1698,36 @@ export default function CharacterManager() {
             </div>
 
             <div className="tavern-modal-actions">
-              <span>调用 Start.bat，不会修改酒馆本体，也不会重复打开页面</span>
+              <span>
+                {settings?.tavernEmbedded
+                  ? "内置酒馆随应用启动，应用退出时自动关闭，数据保存在用户目录"
+                  : "调用 Start.bat，不会修改酒馆本体，也不会重复打开页面"}
+              </span>
+              {settings?.tavernEmbedded && tavernProgress.phase === "ready" && (
+                <button className="secondary" onClick={() => void openTavernInBrowser()}>在浏览器打开</button>
+              )}
               <button
                 className={tavernProgress.phase === "error" ? "retry" : ""}
                 disabled={["checking", "starting", "waiting"].includes(tavernProgress.phase)}
-                onClick={() => void launchTavern()}
+                onClick={() => {
+                  if (settings?.tavernEmbedded && tavernProgress.phase === "ready") void openTavernInApp();
+                  else void launchTavern();
+                }}
               >
-                {tavernProgress.phase === "ready" ? "再次打开" : tavernProgress.phase === "error" ? "重新尝试" : "正在启动"}
+                {settings?.tavernEmbedded && tavernProgress.phase === "ready"
+                  ? "进入酒馆"
+                  : tavernProgress.phase === "ready"
+                    ? "再次打开"
+                    : tavernProgress.phase === "error"
+                      ? "重新尝试"
+                      : "正在启动"}
               </button>
             </div>
 
-            {tavernProgress.phase === "error" && settings && !settings.dirExists && (
+            {tavernProgress.phase === "error" && settings && !settings.dirExists && !settings.tavernEmbedded && (
               <div className="tavern-dir-fix">
                 <span>没有找到酒馆安装目录，换目录了？</span>
+                {settings.embeddedAvailable && <button onClick={() => void switchTavernMode(true)}>改用内置酒馆</button>}
                 <button onClick={() => void pickTavernDir()}>选择酒馆目录</button>
               </div>
             )}
@@ -1557,7 +1800,7 @@ export default function CharacterManager() {
             <span className="modal-icon danger">×</span>
             <h2 id="single-delete-title">删除角色卡</h2>
             <p>确定要删除「{confirmDeleteCard.name}」吗？此操作无法撤销。</p>
-            <div><button className="modal-cancel" onClick={() => setConfirmDeleteId(null)}>取消</button><button className="modal-create delete" onClick={() => deleteCard(confirmDeleteCard.id)}>确认删除</button></div>
+            <div><button className="modal-cancel" onClick={() => setConfirmDeleteId(null)}>取消</button><button className="modal-create delete" onClick={() => void deleteCard(confirmDeleteCard.id)}>确认删除</button></div>
           </div>
         </div>
       )}
@@ -1570,15 +1813,43 @@ export default function CharacterManager() {
             <h2 id="settings-title">设置</h2>
 
             <div className="settings-field">
-              <label htmlFor="tavern-dir-input">酒馆安装目录</label>
+              <label>酒馆运行方式</label>
+              <div className="settings-mode-row">
+                <button
+                  type="button"
+                  className={`settings-mode-option ${settings?.tavernEmbedded ? "active" : ""}`}
+                  disabled={!settings?.embeddedAvailable}
+                  onClick={() => { if (!settings?.tavernEmbedded) void switchTavernMode(true); }}
+                >
+                  <strong>内置酒馆</strong>
+                  <span>{settings?.embeddedVersion ? `SillyTavern ${settings.embeddedVersion} · 随应用退出` : "此版本未内置"}</span>
+                </button>
+                <button
+                  type="button"
+                  className={`settings-mode-option ${!settings?.tavernEmbedded ? "active" : ""}`}
+                  onClick={() => { if (settings?.tavernEmbedded) void switchTavernMode(false); }}
+                >
+                  <strong>外部安装</strong>
+                  <span>使用电脑上已有的 SillyTavern 目录</span>
+                </button>
+              </div>
+              <p className="settings-hint">
+                内置酒馆的角色与聊天数据保存在用户目录，与外部安装互不影响；切换运行方式不会移动任何数据。
+              </p>
+            </div>
+
+            <div className="settings-field">
+              <label htmlFor="tavern-dir-input">{settings?.tavernEmbedded ? "外部酒馆目录（未启用）" : "酒馆安装目录"}</label>
               <div className="settings-dir-row">
                 <input id="tavern-dir-input" readOnly value={settings?.detectedDir ?? ""} />
                 <button onClick={() => void pickTavernDir()}>浏览…</button>
               </div>
-              <p className={`settings-hint ${settings?.dirExists ? "ok" : "warn"}`}>
-                {settings?.dirExists
-                  ? settings?.sillyTavernDir ? "已手动配置，目录有效" : "自动检测到该目录，也可手动指定"
-                  : "目录不存在，请点击「浏览」选择 SillyTavern 安装目录"}
+              <p className={`settings-hint ${settings?.tavernEmbedded ? "" : settings?.dirExists ? "ok" : "warn"}`}>
+                {settings?.tavernEmbedded
+                  ? "当前使用内置酒馆；切换到「外部安装」后此目录才会生效"
+                  : settings?.dirExists
+                    ? settings?.sillyTavernDir ? "已手动配置，目录有效" : "自动检测到该目录，也可手动指定"
+                    : "目录不存在，请点击「浏览」选择 SillyTavern 安装目录"}
               </p>
             </div>
 
@@ -1606,6 +1877,9 @@ export default function CharacterManager() {
                   <span>新版本 v{updateStatus.version ?? ""} 已就绪</span>
                   <button onClick={installUpdate}>立即重启更新</button>
                 </div>
+              )}
+              {updateStatus?.event === "not-available" && (
+                <div className="update-banner ok"><span>当前已是最新版本</span></div>
               )}
               {updateStatus?.event === "error" && (
                 <div className="update-banner error"><span>{updateStatus.message ?? "检查更新失败"}</span></div>
@@ -1657,6 +1931,12 @@ export default function CharacterManager() {
             <p className="settings-hint">
               <a href="https://github.com/Sanqianli-24/tavern-vault-character-card-manager" target="_blank" rel="noreferrer">GitHub 仓库与新版下载</a>
             </p>
+            {settings?.embeddedVersion && (
+              <p className="settings-hint">
+                内置 SillyTavern v{settings.embeddedVersion}（AGPL-3.0 开源，github.com/SillyTavern/SillyTavern），
+                完整源码随安装包一并提供。
+              </p>
+            )}
           </div>
         </div>
       )}

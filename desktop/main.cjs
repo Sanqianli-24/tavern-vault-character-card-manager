@@ -5,7 +5,7 @@ const path = require("node:path");
 const crypto = require("node:crypto");
 const { pathToFileURL } = require("node:url");
 const { spawn } = require("node:child_process");
-const { parseCharacterCardFile } = require("./character-parser.cjs");
+const { parseCharacterCardFile, writeCharacterCardToPng } = require("./character-parser.cjs");
 
 const ALLOWED_CARD_FIELDS = new Set([
   "name", "rating", "favorite", "tags", "bookshelf", "description", "personality", "scenario",
@@ -18,6 +18,8 @@ const BACKUP_MIN_INTERVAL_MS = 10 * 60 * 1000;
 let mainWindow = null;
 let launchTask = null;
 let tavernChild = null;
+let tavernChildEmbedded = false;
+let tavernWindow = null;
 let tavernState = {
   phase: "idle",
   progress: 0,
@@ -57,7 +59,25 @@ function readSettings() {
 function atomicWriteFile(file, data) {
   const temp = `${file}.${process.pid}.tmp`;
   fs.writeFileSync(temp, data, "utf8");
-  fs.renameSync(temp, file);
+  try {
+    const fd = fs.openSync(temp, "r+");
+    fs.fsyncSync(fd);
+    fs.closeSync(fd);
+  } catch {}
+  let lastError = null;
+  // Windows 上目标文件偶尔被杀软/索引器短暂占用导致 EPERM，重试几次。
+  for (let attempt = 0; attempt < 4; attempt += 1) {
+    try {
+      fs.renameSync(temp, file);
+      return;
+    } catch (error) {
+      lastError = error;
+    }
+    const deadline = Date.now() + 150;
+    while (Date.now() < deadline) {}
+  }
+  try { fs.rmSync(temp, { force: true }); } catch {}
+  throw lastError;
 }
 
 function writeSettings(settings) {
@@ -75,24 +95,72 @@ function tavernDirCandidates() {
   ];
 }
 
+// ---- 内置酒馆：安装包里封装的 SillyTavern ----
+// 资源目录（可能只读）放原始副本，用户目录放可写运行副本；数据、插件、配置都在运行副本里。
+
+function embeddedSourceDir() {
+  return app.isPackaged
+    ? path.join(process.resourcesPath, "sillytavern")
+    : path.join(__dirname, "..", "resources", "sillytavern");
+}
+
+function readEmbeddedManifest() {
+  try {
+    const parsed = JSON.parse(fs.readFileSync(path.join(embeddedSourceDir(), "embedded.json"), "utf8"));
+    return parsed && typeof parsed === "object" ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
+function embeddedAvailable() {
+  const manifest = readEmbeddedManifest();
+  return Boolean(manifest?.stVersion) && fs.existsSync(path.join(embeddedSourceDir(), "st", "server.js"));
+}
+
+function embeddedRuntimeDir() {
+  return path.join(app.getPath("userData"), "sillytavern");
+}
+
+function embeddedRuntimeManifestFile() {
+  return path.join(embeddedRuntimeDir(), ".tavern-vault-embedded.json");
+}
+
+function embeddedRuntimeReady() {
+  return fs.existsSync(embeddedRuntimeManifestFile()) && fs.existsSync(path.join(embeddedRuntimeDir(), "server.js"));
+}
+
 function detectTavernDir() {
-  const configured = typeof readSettings().sillyTavernDir === "string" ? readSettings().sillyTavernDir.trim() : "";
+  const settings = readSettings();
+  if (settings.preferEmbedded === true && embeddedAvailable()) {
+    return { dir: embeddedRuntimeDir(), configured: true, exists: embeddedRuntimeReady(), embedded: true };
+  }
+  const configured = typeof settings.sillyTavernDir === "string" ? settings.sillyTavernDir.trim() : "";
   if (configured) {
-    return { dir: configured, configured: true, exists: fs.existsSync(configured) };
+    return { dir: configured, configured: true, exists: fs.existsSync(configured), embedded: false };
   }
   for (const candidate of tavernDirCandidates()) {
-    if (fs.existsSync(candidate)) return { dir: candidate, configured: false, exists: true };
+    if (fs.existsSync(candidate)) return { dir: candidate, configured: false, exists: true, embedded: false };
   }
-  return { dir: tavernDirCandidates()[0], configured: false, exists: false };
+  if (embeddedAvailable()) {
+    return { dir: embeddedRuntimeDir(), configured: false, exists: embeddedRuntimeReady(), embedded: true };
+  }
+  return { dir: tavernDirCandidates()[0], configured: false, exists: false, embedded: false };
 }
 
 function readRows() {
+  const file = libraryFile();
+  if (!fs.existsSync(file)) return [];
+  let parsed;
   try {
-    const rows = JSON.parse(fs.readFileSync(libraryFile(), "utf8"));
-    return Array.isArray(rows) ? rows : [];
+    parsed = JSON.parse(fs.readFileSync(file, "utf8"));
   } catch {
-    return [];
+    throw new Error("卡库文件损坏，已停止读写以保护数据；请从“••• → 备份与恢复”还原");
   }
+  if (!Array.isArray(parsed)) {
+    throw new Error("卡库文件格式异常，已停止读写以保护数据；请从“••• → 备份与恢复”还原");
+  }
+  return parsed;
 }
 
 function listBackupFiles() {
@@ -113,6 +181,7 @@ function listBackupFiles() {
         } catch {}
         return { name, mtime, size, cardCount };
       })
+      .filter((entry) => entry.mtime)
       .sort((a, b) => b.mtime.localeCompare(a.mtime));
   } catch {
     return [];
@@ -124,8 +193,15 @@ function createBackup(reason) {
     if (!fs.existsSync(libraryFile())) return null;
     fs.mkdirSync(backupsDirectory(), { recursive: true });
     const stamp = new Date().toISOString().replace(/[:.]/g, "-");
-    const target = path.join(backupsDirectory(), `character-library.${stamp}.json`);
-    fs.copyFileSync(libraryFile(), target);
+    let target = path.join(backupsDirectory(), `character-library.${stamp}.json`);
+    let counter = 2;
+    while (fs.existsSync(target)) {
+      target = path.join(backupsDirectory(), `character-library.${stamp}-${counter}.json`);
+      counter += 1;
+    }
+    const temp = `${target}.tmp`;
+    fs.copyFileSync(libraryFile(), temp);
+    fs.renameSync(temp, target);
     const backups = listBackupFiles();
     for (const stale of backups.slice(BACKUP_KEEP_COUNT)) {
       try { fs.rmSync(path.join(backupsDirectory(), stale.name), { force: true }); } catch {}
@@ -202,7 +278,7 @@ function normalizeTags(value) {
         }
       })()
       : [];
-  return Array.from(new Set(raw.map((tag) => String(tag).trim().replace(/^#/, "")).filter(Boolean))).slice(0, 40);
+  return Array.from(new Set(raw.map((tag) => String(tag).trim().replace(/^#/, "").slice(0, 60)).filter(Boolean))).slice(0, 40);
 }
 
 function sanitizePatch(patch) {
@@ -219,7 +295,9 @@ function sanitizePatch(patch) {
       safePatch.userTags = safePatch.tags;
       safePatch.tagOwnershipMigrated = true;
     } else if (key === "alternateGreetings") {
-      safePatch.alternateGreetings = Array.isArray(value) ? value.filter((item) => typeof item === "string") : [];
+      safePatch.alternateGreetings = Array.isArray(value)
+        ? value.filter((item) => typeof item === "string").slice(0, 50).map((item) => item.slice(0, 10000))
+        : [];
     } else if (typeof value === "string") {
       safePatch[key] = value.slice(0, 100000);
     }
@@ -287,8 +365,8 @@ function applyCardContent(row, content) {
   };
 }
 
-function buildCardJson(row) {
-  const data = {
+function cardDataFromRow(row) {
+  return {
     name: row.name || row.fileName || "未命名角色",
     description: row.description || "",
     personality: row.personality || "",
@@ -303,7 +381,32 @@ function buildCardJson(row) {
     character_version: row.characterVersion || "",
     tags: normalizeTags(row.userTags ?? row.tags),
   };
-  return JSON.stringify({ spec: "chara_card_v2", spec_version: "2.0", data }, null, 2);
+}
+
+function buildCardJson(row) {
+  return JSON.stringify({ spec: "chara_card_v2", spec_version: "2.0", data: cardDataFromRow(row) }, null, 2);
+}
+
+// 导出时尽量保留用户的编辑：PNG 重写元数据块，JSON 重建内容；
+// 仅 webp/jpg 这类无法内嵌元数据的格式退回复制原始文件。
+function exportCardToFile(row, target) {
+  const source = findCardSource(row);
+  if (source && /\.png$/i.test(source)) {
+    try {
+      const rewritten = writeCharacterCardToPng(fs.readFileSync(source), cardDataFromRow(row));
+      if (rewritten) {
+        fs.writeFileSync(target, rewritten);
+        return;
+      }
+    } catch {}
+    fs.copyFileSync(source, target);
+    return;
+  }
+  if (source && /\.(webp|jpe?g)$/i.test(source)) {
+    fs.copyFileSync(source, target);
+    return;
+  }
+  fs.writeFileSync(target, buildCardJson(row), "utf8");
 }
 
 function detectTavernPort() {
@@ -352,18 +455,167 @@ function updateTavernState(patch, logLine) {
   }
 }
 
+// 升级内置酒馆版本时必须保留的用户数据（相对运行目录）
+const EMBEDDED_PRESERVED_PATHS = [
+  "data",
+  "config.yaml",
+  "secrets.json",
+  "plugins",
+  path.join("public", "scripts", "extensions", "third-party"),
+];
+
+function collectFilesRecursive(root) {
+  const files = [];
+  const walk = (current) => {
+    for (const entry of fs.readdirSync(current, { withFileTypes: true })) {
+      const full = path.join(current, entry.name);
+      if (entry.isDirectory()) walk(full);
+      else if (entry.isFile()) files.push({ path: full, rel: path.relative(root, full), size: fs.statSync(full).size });
+    }
+  };
+  walk(root);
+  return files;
+}
+
+// 内置副本的固定安全配置：只监听本机、启动后不抢系统浏览器（界面由应用内窗口承载）
+function patchEmbeddedStConfig(config) {
+  let patched = config.replace(/^listen:.*$/m, "listen: false");
+  patched = patched.replace(/(browserLaunch:\s*\n(?:[ \t]+#.*\n)*?[ \t]+enabled:\s*)(\S+)/, "$1false");
+  if (!/^listen:/m.test(patched)) patched += "\nlisten: false\n";
+  return patched;
+}
+
+// 首次使用或版本更新时，把安装包里的酒馆复制到用户可写目录（安装目录可能只读，酒馆要写自己的数据）
+async function ensureEmbeddedRuntime(onProgress) {
+  const source = path.join(embeddedSourceDir(), "st");
+  const runtime = embeddedRuntimeDir();
+  const manifest = readEmbeddedManifest() || {};
+  const stamp = {
+    version: String(manifest.stVersion ?? ""),
+    nodeVersion: String(manifest.nodeVersion ?? ""),
+    copiedAt: new Date().toISOString(),
+  };
+
+  if (embeddedRuntimeReady()) {
+    let existing = null;
+    try { existing = JSON.parse(fs.readFileSync(embeddedRuntimeManifestFile(), "utf8")); } catch {}
+    if (existing?.version === stamp.version) return { ok: true, fresh: false };
+  }
+
+  const previousBackup = `${runtime}.old-${Date.now()}`;
+  if (fs.existsSync(runtime)) fs.renameSync(runtime, previousBackup);
+  try {
+    fs.mkdirSync(runtime, { recursive: true });
+    const files = collectFilesRecursive(source);
+    const totalBytes = files.reduce((sum, file) => sum + file.size, 0) || 1;
+    let copiedBytes = 0;
+    let lastReport = 0;
+    for (const file of files) {
+      const target = path.join(runtime, file.rel);
+      fs.mkdirSync(path.dirname(target), { recursive: true });
+      fs.copyFileSync(file.path, target);
+      copiedBytes += file.size;
+      const now = Date.now();
+      if (now - lastReport > 300) {
+        lastReport = now;
+        onProgress?.(copiedBytes, totalBytes);
+        await delay(0);
+      }
+    }
+    if (fs.existsSync(previousBackup)) {
+      for (const rel of EMBEDDED_PRESERVED_PATHS) {
+        const from = path.join(previousBackup, rel);
+        if (!fs.existsSync(from)) continue;
+        const to = path.join(runtime, rel);
+        if (fs.existsSync(to)) fs.rmSync(to, { recursive: true, force: true });
+        fs.cpSync(from, to, { recursive: true });
+      }
+    }
+  } catch (error) {
+    // 复制失败时回滚旧版本，保证运行目录要么完整、要么回到升级前
+    if (fs.existsSync(previousBackup)) {
+      try {
+        fs.rmSync(runtime, { recursive: true, force: true });
+        fs.renameSync(previousBackup, runtime);
+      } catch {}
+    }
+    return { ok: false, error: `复制内置酒馆文件失败：${error.message || error}` };
+  }
+  try { fs.rmSync(previousBackup, { recursive: true, force: true, maxRetries: 3, retryDelay: 200 }); } catch {}
+
+  const configPath = path.join(runtime, "config.yaml");
+  try {
+    const template = fs.existsSync(configPath)
+      ? fs.readFileSync(configPath, "utf8")
+      : fs.readFileSync(path.join(runtime, "default", "config.yaml"), "utf8");
+    fs.writeFileSync(configPath, patchEmbeddedStConfig(template), "utf8");
+  } catch (error) {
+    return { ok: false, error: `写入内置酒馆配置失败：${error.message || error}` };
+  }
+
+  fs.writeFileSync(embeddedRuntimeManifestFile(), `${JSON.stringify(stamp, null, 2)}\n`, "utf8");
+  return { ok: true, fresh: true };
+}
+
+function forwardTavernChildLogs(child) {
+  const forward = (stream) => {
+    if (!stream) return;
+    let buffer = "";
+    stream.on("data", (chunk) => {
+      buffer += chunk.toString("utf8");
+      const lines = buffer.split(/\r?\n/);
+      buffer = lines.pop() ?? "";
+      for (const line of lines) {
+        const text = line.trim();
+        if (text) updateTavernState({}, `酒馆 ${text.slice(0, 180)}`);
+      }
+    });
+  };
+  forward(child.stdout);
+  forward(child.stderr);
+}
+
+async function waitForTavernPort(port, getExited, timeoutMs = 180000) {
+  const startedAt = Date.now();
+  while (Date.now() - startedAt < timeoutMs) {
+    if (await isPortOpen(port)) return { ready: true };
+
+    if (getExited() !== null) return { ready: false, exited: getExited() };
+
+    const elapsed = Date.now() - startedAt;
+    const progress = Math.min(94, 36 + Math.floor(elapsed / 2600));
+    const message = elapsed < 20000
+      ? "正在检查运行依赖"
+      : elapsed < 65000
+        ? "正在初始化酒馆服务"
+        : "酒馆仍在启动，请稍候";
+    updateTavernState({ phase: "waiting", progress, message, detail: `等待端口 ${port} 响应 · ${Math.floor(elapsed / 1000)} 秒` });
+    await delay(900);
+  }
+  return { ready: false, timeout: true };
+}
+
 async function launchSillyTavern() {
   const detected = detectTavernDir();
-  const tavernDir = detected.dir;
   const port = detectTavernPort();
   updateTavernState({
     phase: "checking",
     progress: 6,
     message: "正在检查酒馆环境",
-    detail: `检查 ${tavernDir}`,
+    detail: detected.embedded ? "使用内置酒馆" : `检查 ${detected.dir}`,
     port,
     logs: [],
-  }, "开始检查 SillyTavern 安装目录");
+  }, detected.embedded ? "使用内置 SillyTavern" : "开始检查 SillyTavern 安装目录");
+
+  if (detected.embedded) {
+    await launchEmbeddedTavern(port);
+  } else {
+    await launchExternalTavern(detected, port);
+  }
+}
+
+async function launchExternalTavern(detected, port) {
+  const tavernDir = detected.dir;
 
   if (!detected.exists) {
     updateTavernState({
@@ -392,6 +644,7 @@ async function launchSillyTavern() {
 
   let childExited = null;
   try {
+    tavernChildEmbedded = false;
     tavernChild = spawn(process.env.ComSpec || "cmd.exe", ["/d", "/s", "/c", `"${startScript}" < nul`], {
       cwd: tavernDir,
       windowsHide: false,
@@ -408,32 +661,131 @@ async function launchSillyTavern() {
   }
 
   updateTavernState({ phase: "waiting", progress: 36, message: "酒馆进程已启动", detail: "正在等待服务准备完成" }, "启动进程创建成功");
-  const startedAt = Date.now();
-  const timeoutMs = 180000;
+  const outcome = await waitForTavernPort(port, () => childExited);
 
-  while (Date.now() - startedAt < timeoutMs) {
-    if (await isPortOpen(port)) {
-      updateTavernState({ phase: "ready", progress: 100, message: "酒馆启动完成", detail: `已在端口 ${port} 就绪 · Start.bat 已处理浏览器打开` }, "SillyTavern 服务已就绪，不重复打开浏览器");
+  if (outcome.ready) {
+    updateTavernState({ phase: "ready", progress: 100, message: "酒馆启动完成", detail: `已在端口 ${port} 就绪 · Start.bat 已处理浏览器打开` }, "SillyTavern 服务已就绪，不重复打开浏览器");
+    return;
+  }
+  if (outcome.exited !== undefined) {
+    updateTavernState({ phase: "error", progress: 100, message: "酒馆进程提前退出", detail: `退出信息：${outcome.exited}` }, "启动进程已退出，请查看酒馆日志");
+    return;
+  }
+  updateTavernState({ phase: "error", progress: 100, message: "启动等待超时", detail: `端口 ${port} 在 180 秒内没有响应` }, `请查看 ${path.join(tavernDir, "sillytavern-error.log")}`);
+}
+
+async function launchEmbeddedTavern(port) {
+  const manifest = readEmbeddedManifest() || {};
+  const runtime = embeddedRuntimeDir();
+
+  if (!embeddedRuntimeReady()) {
+    updateTavernState({
+      phase: "checking",
+      progress: 8,
+      message: "正在准备内置酒馆",
+      detail: `首次使用：把 SillyTavern ${manifest.stVersion || ""} 复制到用户目录（仅此一次）`,
+    }, "开始复制内置酒馆文件");
+    const ensured = await ensureEmbeddedRuntime((copied, total) => {
+      const ratio = total ? copied / total : 0;
+      updateTavernState({
+        progress: 8 + Math.round(ratio * 14),
+        message: "正在准备内置酒馆",
+        detail: `已复制 ${(copied / 1048576).toFixed(0)} / ${(total / 1048576).toFixed(0)} MB`,
+      });
+    });
+    if (!ensured.ok) {
+      updateTavernState({ phase: "error", progress: 100, message: "内置酒馆准备失败", detail: ensured.error }, ensured.error);
       return;
     }
-
-    if (childExited !== null) {
-      updateTavernState({ phase: "error", progress: 100, message: "酒馆进程提前退出", detail: `退出信息：${childExited}` }, "启动进程已退出，请查看酒馆日志");
-      return;
-    }
-
-    const elapsed = Date.now() - startedAt;
-    const progress = Math.min(94, 36 + Math.floor(elapsed / 2600));
-    const message = elapsed < 20000
-      ? "正在检查运行依赖"
-      : elapsed < 65000
-        ? "正在初始化酒馆服务"
-        : "酒馆仍在启动，请稍候";
-    updateTavernState({ phase: "waiting", progress, message, detail: `等待端口 ${port} 响应 · ${Math.floor(elapsed / 1000)} 秒` });
-    await delay(900);
+    updateTavernState({ progress: 24, message: "内置酒馆就绪", detail: `SillyTavern ${manifest.stVersion || ""} · 端口 ${port}` }, "内置酒馆文件复制完成");
+  } else {
+    updateTavernState({ progress: 18, message: "内置酒馆已就绪", detail: `SillyTavern ${manifest.stVersion || ""}` }, "内置酒馆已准备好");
   }
 
-  updateTavernState({ phase: "error", progress: 100, message: "启动等待超时", detail: `端口 ${port} 在 180 秒内没有响应` }, `请查看 ${path.join(tavernDir, "sillytavern-error.log")}`);
+  if (await isPortOpen(port)) {
+    updateTavernState({ phase: "ready", progress: 100, message: "酒馆已经在运行", detail: `http://127.0.0.1:${port}` }, "检测到内置酒馆已在运行");
+    openTavernWindow(port);
+    return;
+  }
+
+  const nodeExe = path.join(embeddedSourceDir(), "node", "node.exe");
+  const useBundledNode = fs.existsSync(nodeExe);
+  const command = useBundledNode ? nodeExe : process.execPath;
+  const env = { ...process.env, NODE_ENV: "production" };
+  if (useBundledNode) delete env.ELECTRON_RUN_AS_NODE;
+  else env.ELECTRON_RUN_AS_NODE = "1";
+
+  updateTavernState(
+    { phase: "starting", progress: 28, message: "正在启动内置酒馆", detail: useBundledNode ? "使用随包的 Node 运行时" : "使用应用内置兼容层" },
+    `启动内置酒馆：${command} server.js`,
+  );
+
+  let childExited = null;
+  try {
+    tavernChildEmbedded = true;
+    tavernChild = spawn(command, ["server.js"], {
+      cwd: runtime,
+      windowsHide: true,
+      stdio: ["ignore", "pipe", "pipe"],
+      env,
+    });
+    forwardTavernChildLogs(tavernChild);
+    tavernChild.once("exit", (code) => { childExited = code; });
+    tavernChild.once("error", (error) => { childExited = error.message; });
+  } catch (error) {
+    tavernChildEmbedded = false;
+    updateTavernState({ phase: "error", progress: 100, message: "无法启动内置酒馆", detail: String(error.message || error) }, "创建内置酒馆进程失败");
+    return;
+  }
+
+  updateTavernState({ phase: "waiting", progress: 36, message: "内置酒馆进程已启动", detail: "正在等待服务准备完成" }, "内置酒馆启动进程创建成功");
+  const outcome = await waitForTavernPort(port, () => childExited);
+
+  if (outcome.ready) {
+    updateTavernState({ phase: "ready", progress: 100, message: "酒馆启动完成", detail: `已在端口 ${port} 就绪 · 已在应用内打开` }, "内置酒馆就绪，已打开应用内窗口");
+    openTavernWindow(port);
+    return;
+  }
+  if (outcome.exited !== undefined) {
+    tavernChildEmbedded = false;
+    updateTavernState({ phase: "error", progress: 100, message: "内置酒馆进程提前退出", detail: `退出信息：${outcome.exited}` }, "内置酒馆进程已退出，详情见启动日志");
+    return;
+  }
+  updateTavernState({ phase: "error", progress: 100, message: "启动等待超时", detail: `端口 ${port} 在 180 秒内没有响应` }, "内置酒馆启动超时，请重试或反馈日志");
+}
+
+// 应用内酒馆窗口：承载内置酒馆界面，也可用于查看已在运行的外部酒馆
+function openTavernWindow(port) {
+  if (tavernWindow && !tavernWindow.isDestroyed()) {
+    tavernWindow.show();
+    tavernWindow.focus();
+    tavernWindow.loadURL(`http://127.0.0.1:${port}`).catch(() => {});
+    return;
+  }
+  tavernWindow = new BrowserWindow({
+    width: 1440,
+    height: 920,
+    minWidth: 960,
+    minHeight: 640,
+    backgroundColor: "#0d0d11",
+    title: "内置酒馆 · SillyTavern",
+    autoHideMenuBar: true,
+    show: false,
+    webPreferences: {
+      contextIsolation: true,
+      nodeIntegration: false,
+      sandbox: true,
+    },
+  });
+  tavernWindow.setMenu(null);
+  tavernWindow.webContents.setWindowOpenHandler(({ url }) => {
+    if (/^http:\/\/(127\.0\.0\.1|localhost):\d+\//i.test(url)) return { action: "allow" };
+    if (/^https?:/i.test(url)) shell.openExternal(url);
+    return { action: "deny" };
+  });
+  tavernWindow.once("ready-to-show", () => tavernWindow.show());
+  tavernWindow.on("closed", () => { tavernWindow = null; });
+  tavernWindow.loadURL(`http://127.0.0.1:${port}`).catch(() => {});
 }
 
 function uniqueTargetPath(dir, fileName) {
@@ -454,7 +806,8 @@ function sendUpdateStatus(payload) {
 }
 
 function setupAutoUpdater() {
-  if (SMOKE_TEST) return;
+  // electron-updater 不支持便携版目标，强制走 GitHub 手动下载路径
+  if (SMOKE_TEST || process.env.PORTABLE_EXECUTABLE_DIR) return;
   try {
     autoUpdater = require("electron-updater").autoUpdater;
     autoUpdater.autoDownload = true;
@@ -480,7 +833,9 @@ function registerIpcHandlers() {
       if (cleaned !== row) changed = true;
       return cleaned;
     });
-    if (changed) writeRows(cleanedRows, { backup: "never" });
+    if (changed) {
+      try { writeRows(cleanedRows, { backup: "never" }); } catch {}
+    }
     return cleanedRows.map(publicCard);
   });
 
@@ -527,12 +882,14 @@ function registerIpcHandlers() {
   ipcMain.handle("cards:import", (_event, entries) => {
     const rows = readRows();
     const imported = [];
+    const createdDirs = [];
     let skipped = 0;
     let duplicates = 0;
     const existingKeys = new Set(rows.map((row) => `${String(row.fileName || "").toLowerCase()}::${Number(row.size) || 0}`));
     fs.mkdirSync(cardsDirectory(), { recursive: true });
 
     for (const entry of Array.isArray(entries) ? entries : []) {
+      let cardDir = null;
       try {
         if (!entry || !entry.path || !fs.existsSync(entry.path)) {
           skipped += 1;
@@ -553,13 +910,14 @@ function registerIpcHandlers() {
         const cardContent = parseCharacterCardFile(entry.path);
         let imagePath = "";
         if (isImage) {
-          const cardDir = path.join(cardsDirectory(), id);
+          cardDir = path.join(cardsDirectory(), id);
+          createdDirs.push(cardDir);
           fs.mkdirSync(cardDir, { recursive: true });
           imagePath = path.join(cardDir, `card${extension}`);
           fs.copyFileSync(entry.path, imagePath);
         }
         const sourceTags = normalizeTags(cardContent?.tags);
-        const userTags = normalizeTags(entry.initialTags);
+        const userTags = [];
         const description = cardContent?.description?.trim() || "刚刚导入的角色卡，等待你补充标签与简介。";
         const row = {
           id,
@@ -596,10 +954,20 @@ function registerIpcHandlers() {
         imported.push(publicCard(row));
       } catch {
         skipped += 1;
+        if (cardDir) {
+          try { fs.rmSync(cardDir, { recursive: true, force: true }); } catch {}
+        }
       }
     }
 
-    writeRows(rows);
+    try {
+      writeRows(rows);
+    } catch (error) {
+      for (const dir of createdDirs) {
+        try { fs.rmSync(dir, { recursive: true, force: true }); } catch {}
+      }
+      throw error;
+    }
     return { cards: imported, skipped, duplicates };
   });
 
@@ -648,7 +1016,9 @@ function registerIpcHandlers() {
     const row = readRows().find((item) => item.id === id);
     if (!row) return { ok: false, error: "角色卡不存在" };
     const source = findCardSource(row);
-    const defaultName = source ? path.basename(source) : `${(row.name || "角色卡").replace(/[\\/:*?"<>|]/g, "_").slice(0, 80)}.json`;
+    const defaultName = source
+      ? path.basename(source)
+      : `${(row.name || "角色卡").replace(/[\\/:*?"<>|]/g, "_").slice(0, 80)}.json`;
     const extension = path.extname(defaultName).toLowerCase() || ".json";
     const result = await dialog.showSaveDialog(mainWindow, {
       title: "导出角色卡",
@@ -657,8 +1027,7 @@ function registerIpcHandlers() {
     });
     if (result.canceled || !result.filePath) return { ok: false, canceled: true };
     try {
-      if (source) fs.copyFileSync(source, result.filePath);
-      else fs.writeFileSync(result.filePath, buildCardJson(row), "utf8");
+      exportCardToFile(row, result.filePath);
       return { ok: true, path: result.filePath };
     } catch (error) {
       return { ok: false, error: String(error?.message || error) };
@@ -678,14 +1047,12 @@ function registerIpcHandlers() {
     let exported = 0;
     let failed = 0;
     for (const row of rows) {
+      const source = findCardSource(row);
+      const fileName = source
+        ? path.basename(source)
+        : `${(row.name || row.fileName || "角色卡").replace(/[\\/:*?"<>|]/g, "_").slice(0, 80)}.json`;
       try {
-        const source = findCardSource(row);
-        const fileName = source
-          ? path.basename(source)
-          : `${(row.name || row.fileName || "角色卡").replace(/[\\/:*?"<>|]/g, "_").slice(0, 80)}.json`;
-        const target = uniqueTargetPath(targetDir, fileName);
-        if (source) fs.copyFileSync(source, target);
-        else fs.writeFileSync(target, buildCardJson(row), "utf8");
+        exportCardToFile(row, uniqueTargetPath(targetDir, fileName));
         exported += 1;
       } catch {
         failed += 1;
@@ -696,20 +1063,35 @@ function registerIpcHandlers() {
 
   ipcMain.handle("settings:get", () => {
     const detected = detectTavernDir();
+    const settings = readSettings();
     return {
-      sillyTavernDir: detected.configured ? detected.dir : "",
+      sillyTavernDir: typeof settings.sillyTavernDir === "string" ? settings.sillyTavernDir.trim() : "",
       detectedDir: detected.dir,
       dirExists: detected.exists,
       appVersion: app.getVersion(),
       isPortable: Boolean(process.env.PORTABLE_EXECUTABLE_DIR),
+      preferEmbedded: settings.preferEmbedded === true,
+      embeddedAvailable: embeddedAvailable(),
+      embeddedVersion: readEmbeddedManifest()?.stVersion ?? null,
+      embeddedRuntimeReady: embeddedRuntimeReady(),
+      tavernEmbedded: detected.embedded,
     };
   });
 
   ipcMain.handle("settings:set", (_event, patch) => {
-    const dir = typeof patch?.sillyTavernDir === "string" ? patch.sillyTavernDir.trim().replace(/\\+$/, "") : "";
-    if (dir && !fs.existsSync(dir)) return { ok: false, error: "目录不存在" };
     const settings = readSettings();
-    writeSettings({ ...settings, sillyTavernDir: dir });
+    let dir = typeof settings.sillyTavernDir === "string" ? settings.sillyTavernDir : "";
+    if (typeof patch?.sillyTavernDir === "string") {
+      dir = patch.sillyTavernDir.trim().replace(/\\+$/, "");
+      // 保留盘符根（"D:\" 削成 "D:" 会变成随 CWD 漂移的驱动器相对路径）
+      if (/^[A-Za-z]:$/.test(dir)) dir += "\\";
+      if (dir && !fs.existsSync(dir)) return { ok: false, error: "目录不存在" };
+    }
+    const preferEmbedded = patch?.preferEmbedded === true;
+    if (preferEmbedded && !embeddedAvailable()) {
+      return { ok: false, error: "当前版本未内置酒馆（精简版请使用外部目录）" };
+    }
+    writeSettings({ ...settings, sillyTavernDir: dir, preferEmbedded });
     const detected = detectTavernDir();
     tavernState = { ...tavernState, detail: `等待启动 ${detected.dir}` };
     return { ok: true, sillyTavernDir: detected.dir, dirExists: detected.exists };
@@ -729,7 +1111,7 @@ function registerIpcHandlers() {
   ipcMain.handle("backups:create", () => {
     const name = createBackup("manual");
     lastAutoBackupAt = Date.now();
-    return { ok: Boolean(name), name };
+    return { ok: Boolean(name), name: name ?? undefined };
   });
 
   ipcMain.handle("backups:restore", (_event, name) => {
@@ -782,6 +1164,20 @@ function registerIpcHandlers() {
     }
     await delay(80);
     return tavernState;
+  });
+
+  ipcMain.handle("tavern:openWindow", async () => {
+    const port = detectTavernPort();
+    if (!(await isPortOpen(port))) return { ok: false, error: "酒馆尚未运行" };
+    openTavernWindow(port);
+    return { ok: true, port };
+  });
+
+  ipcMain.handle("tavern:openBrowser", async () => {
+    const port = detectTavernPort();
+    if (!(await isPortOpen(port))) return { ok: false, error: "酒馆尚未运行" };
+    await shell.openExternal(`http://127.0.0.1:${port}`);
+    return { ok: true, port };
   });
 }
 
@@ -843,11 +1239,22 @@ if (!hasLock) {
   });
 
   app.whenReady().then(() => {
-    tavernState = { ...tavernState, detail: `等待启动 ${detectTavernDir().dir}` };
+    const detectedAtBoot = detectTavernDir();
+    tavernState = {
+      ...tavernState,
+      detail: detectedAtBoot.embedded ? "内置酒馆待命，点击启动即可使用" : `等待启动 ${detectedAtBoot.dir}`,
+    };
     registerIpcHandlers();
     createWindow();
     setupAutoUpdater();
     app.on("activate", () => { if (BrowserWindow.getAllWindows().length === 0) createWindow(); });
+  });
+
+  app.on("before-quit", () => {
+    // 内置酒馆随应用退出；外部安装的酒馆是独立进程，不受影响
+    if (tavernChild && tavernChildEmbedded) {
+      try { tavernChild.kill(); } catch {}
+    }
   });
 
   app.on("window-all-closed", () => app.quit());
