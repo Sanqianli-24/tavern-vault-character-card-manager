@@ -202,3 +202,55 @@
   font-size: 12px;
   line-height: 1.6;
 }
+
+/* 完整管理覆盖层：卡库管理器整体嵌在酒馆页面内 */
+#tv_manager_overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 2147483000;
+  display: flex;
+  flex-direction: column;
+  background: #0d0d11;
+}
+
+.tv-manager-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex: 0 0 auto;
+  height: 44px;
+  padding: 0 16px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.14);
+  background: #14141a;
+  color: #eee;
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.tv-manager-close {
+  width: 32px;
+  height: 32px;
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  border-radius: 8px;
+  background: transparent;
+  color: #ccc;
+  font-size: 18px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.tv-manager-close:hover {
+  border-color: rgba(255, 255, 255, 0.4);
+  color: #fff;
+}
+
+.tv-manager-frame {
+  flex: 1 1 auto;
+  width: 100%;
+  border: 0;
+  background: #0d0d11;
+}
+
+.tv-full {
+  white-space: nowrap;
+}

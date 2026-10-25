@@ -1018,7 +1018,24 @@ function ensureTavernWindow() {
     {
       label: "角色卡库",
       submenu: [
-        { label: "完整卡库管理", click: () => createManagerWindow() },
+        {
+          label: "完整卡库管理",
+          // 内置模式优先在酒馆页面里打开（扩展挂载的覆盖层），不再另开窗口
+          click: async () => {
+            const loaded = tavernWindow && !tavernWindow.isDestroyed()
+              && /^http:\/\/(127\.0\.0\.1|localhost):\d+/.test(tavernWindow.webContents.getURL());
+            if (loaded) {
+              tavernWindow.show();
+              tavernWindow.focus();
+              const opened = await tavernWindow.webContents.executeJavaScript(
+                "typeof window.__tavernVaultOpenManager === 'function' ? (window.__tavernVaultOpenManager(), true) : false",
+                true,
+              ).catch(() => false);
+              if (opened) return;
+            }
+            createManagerWindow();
+          },
+        },
         {
           label: "在浏览器打开酒馆",
           click: async () => {

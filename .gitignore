@@ -49,3 +49,6 @@ yarn-error.log*
 
 # 内置 SillyTavern 运行时（构建时由 scripts/fetch-sillytavern.mjs 组装）
 /resources/
+
+# 完整管理覆盖层的内联产物（desktop:build 时由 scripts/inline-manager-html.mjs 生成）
+/desktop/st-extension/tavern-vault/manager.html

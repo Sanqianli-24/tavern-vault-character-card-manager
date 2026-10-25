@@ -128,6 +128,7 @@ function panelHtml() {
                 <select id="tv_tag" class="tv-select">${tagOptions}</select>
                 <select id="tv_rating" class="tv-select">${ratingOptions}</select>
                 <span class="tv-count">共 ${cards.length} 张</span>
+                <button class="menu_button tv-full" id="tv_full" title="在酒馆内打开完整的卡库管理">完整管理</button>
             </div>
             <div class="tv-grid">${cardsHtml}</div>
             <div class="tv-section">从酒馆收录（${missing.length} 个未收录）</div>
@@ -184,6 +185,10 @@ function bindGlobalPanelEvents() {
 
     document.addEventListener('click', async (event) => {
         if (!event.target.closest?.('.tv-panel')) return;
+        if (event.target.closest('#tv_full')) {
+            mountManagerOverlay();
+            return;
+        }
         const target = event.target.closest('button.tv-act');
         if (!target) return;
         const root = document.querySelector('.tv-panel');
@@ -315,6 +320,92 @@ async function adopt(avatar, root) {
         toast('error', error.message || '收录失败');
     }
 }
+
+// ---------- 完整管理覆盖层 ----------
+// 把整个卡库管理器（React 应用）作为 srcdoc iframe 装进酒馆页面：
+// 样式天然隔离；iframe 里的 desktopAPI 由内联 shim 通过 postMessage 桥接到本页。
+
+let managerFrame = null;
+
+function forwardEvent(method, payload) {
+    managerFrame?.contentWindow?.postMessage({ __tv: 'event', method, payload }, '*');
+}
+
+function setupManagerBridge() {
+    if (setupManagerBridge.done) return;
+    setupManagerBridge.done = true;
+
+    window.addEventListener('message', async (event) => {
+        if (!managerFrame || event.source !== managerFrame.contentWindow) return;
+        const data = event.data;
+        if (!data || data.__tv !== 'call') return;
+        const api = host();
+        const method = data.method;
+        if (!api || typeof api[method] !== 'function') {
+            managerFrame.contentWindow.postMessage({ __tv: 'resp', id: data.id, ok: false, error: 'desktopAPI 不可用' }, '*');
+            return;
+        }
+        try {
+            const result = await api[method](...(data.args || []));
+            managerFrame.contentWindow.postMessage({ __tv: 'resp', id: data.id, ok: true, result }, '*');
+        } catch (error) {
+            managerFrame.contentWindow.postMessage({ __tv: 'resp', id: data.id, ok: false, error: String(error?.message || error) }, '*');
+        }
+    });
+
+    const api = host();
+    if (api?.onTavernProgress) api.onTavernProgress((payload) => forwardEvent('onTavernProgress', payload));
+    if (api?.onUpdateStatus) api.onUpdateStatus((payload) => forwardEvent('onUpdateStatus', payload));
+}
+
+async function mountManagerOverlay() {
+    if (document.getElementById('tv_manager_overlay')) return;
+    setupManagerBridge();
+
+    let html = '';
+    try {
+        const response = await fetch('/scripts/extensions/third-party/tavern-vault/manager.html');
+        if (!response.ok) throw new Error(String(response.status));
+        html = await response.text();
+    } catch {
+        toast('error', '完整管理界面加载失败，请重启应用');
+        return;
+    }
+
+    const overlay = document.createElement('div');
+    overlay.id = 'tv_manager_overlay';
+    const head = document.createElement('div');
+    head.className = 'tv-manager-head';
+    const title = document.createElement('span');
+    title.textContent = '角色卡库 · 完整管理';
+    const close = document.createElement('button');
+    close.className = 'tv-manager-close';
+    close.textContent = '×';
+    close.title = '关闭（Esc）';
+    close.addEventListener('click', unmountManagerOverlay);
+    head.append(title, close);
+
+    const frame = document.createElement('iframe');
+    frame.className = 'tv-manager-frame';
+    frame.srcdoc = html;
+    managerFrame = frame;
+
+    overlay.append(head, frame);
+    document.body.appendChild(overlay);
+    overlay.addEventListener('keydown', (event) => {
+        if (event.key === 'Escape') unmountManagerOverlay();
+    });
+    close.focus();
+}
+
+function unmountManagerOverlay() {
+    const overlay = document.getElementById('tv_manager_overlay');
+    if (overlay) overlay.remove();
+    managerFrame = null;
+}
+
+// 宿主菜单「完整卡库管理」通过它把入口收进酒馆页面
+window.__tavernVaultOpenManager = mountManagerOverlay;
 
 // ---------- 面板入口 ----------
 

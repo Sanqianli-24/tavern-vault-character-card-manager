@@ -1,6 +1,6 @@
 {
   "name": "sillytavern-character-library",
-  "version": "0.8.1",
+  "version": "0.9.0",
   "description": "中文 SillyTavern 角色卡管理器与一键启动器",
   "author": "LongShuo",
   "private": true,
@@ -12,7 +12,7 @@
     "dev": "vinext dev",
     "build": "vinext build",
     "start": "vinext start",
-    "desktop:build": "vite build --config vite.desktop.config.ts",
+    "desktop:build": "vite build --config vite.desktop.config.ts && node scripts/inline-manager-html.mjs",
     "desktop:dev": "npm run desktop:build && electron .",
     "desktop:check": "npm run desktop:build && node --check desktop/main.cjs && node --check desktop/preload.cjs",
     "desktop:pack": "node scripts/fetch-sillytavern.mjs && npm run desktop:build && electron-builder --win --config electron-builder.config.cjs",
