@@ -1,6 +1,6 @@
 {
   "name": "sillytavern-character-library",
-  "version": "0.8.0",
+  "version": "0.8.1",
   "description": "中文 SillyTavern 角色卡管理器与一键启动器",
   "author": "LongShuo",
   "private": true,

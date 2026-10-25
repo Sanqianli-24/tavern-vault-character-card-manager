@@ -29,6 +29,7 @@ const config = {
     "desktop/preload.cjs",
     "desktop/character-parser.cjs",
     "desktop/st-extension/**/*",
+    "desktop/icon.ico",
     "desktop-dist/**/*",
     "package.json"
   ],

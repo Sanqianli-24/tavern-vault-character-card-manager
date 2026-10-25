@@ -931,6 +931,21 @@ export default function CharacterManager() {
     }
   }
 
+  async function setCloseAction(closeAction: "ask" | "tray" | "quit") {
+    if (!window.desktopAPI) return;
+    try {
+      const result = await window.desktopAPI.setSettings({ closeAction });
+      if (!result.ok) {
+        showToast(result.error || "设置失败", "error");
+        return;
+      }
+      await refreshSettings();
+      showToast(closeAction === "ask" ? "已恢复关闭时询问" : closeAction === "tray" ? "已设为最小化到托盘" : "已设为彻底退出");
+    } catch {
+      showToast("设置失败", "error");
+    }
+  }
+
   async function installTavernExtension() {
     if (!window.desktopAPI) return;
     try {
@@ -1918,6 +1933,28 @@ export default function CharacterManager() {
                   安装后刷新酒馆页面（F5），角色面板按钮行会出现「卡库」入口，可在酒馆里直接浏览卡库、导入并开聊。
                 </p>
               )}
+            </div>
+
+            <div className="settings-field">
+              <label>关闭窗口时</label>
+              <div className="settings-mode-row">
+                {([
+                  ["ask", "每次询问", "关闭时弹窗选择"],
+                  ["tray", "最小化到托盘", "酒馆后台运行，托盘恢复"],
+                  ["quit", "彻底退出", "酒馆服务一并停止"],
+                ] as const).map(([value, title, hint]) => (
+                  <button
+                    key={value}
+                    type="button"
+                    className={`settings-mode-option ${(settings?.closeAction ?? "ask") === value ? "active" : ""}`}
+                    onClick={() => { if ((settings?.closeAction ?? "ask") !== value) void setCloseAction(value); }}
+                  >
+                    <strong>{title}</strong>
+                    <span>{hint}</span>
+                  </button>
+                ))}
+              </div>
+              <p className="settings-hint">应用最小化到托盘后，酒馆继续在后台运行；双击任务栏托盘图标即可恢复窗口。</p>
             </div>
 
             <div className="settings-field">

@@ -1,4 +1,4 @@
-const { app, BrowserWindow, dialog, ipcMain, Menu, shell } = require("electron");
+const { app, BrowserWindow, dialog, ipcMain, Menu, shell, Tray } = require("electron");
 const fs = require("node:fs");
 const net = require("node:net");
 const path = require("node:path");
@@ -20,6 +20,8 @@ let launchTask = null;
 let tavernChild = null;
 let tavernChildEmbedded = false;
 let tavernWindow = null;
+let tray = null;
+let trayBalloonShown = false;
 let tavernState = {
   phase: "idle",
   progress: 0,
@@ -888,6 +890,110 @@ async function launchEmbeddedTavern(port) {
   updateTavernState({ phase: "error", progress: 100, message: "启动等待超时", detail: `端口 ${port} 在 180 秒内没有响应` }, "内置酒馆启动超时，请重试或反馈日志");
 }
 
+// ---- 关闭行为与系统托盘 ----
+// 首次关窗弹窗询问「最小化到托盘 / 彻底关闭」，可勾选「以后都这样」；
+// 选择保存在 settings.closeAction（ask/tray/quit），托盘菜单与设置里可改。
+
+function getCloseAction() {
+  const value = readSettings().closeAction;
+  return value === "tray" || value === "quit" ? value : "ask";
+}
+
+function setCloseAction(value) {
+  const settings = readSettings();
+  writeSettings({ ...settings, closeAction: value });
+  rebuildTrayMenu();
+}
+
+function rebuildTrayMenu() {
+  if (!tray) return;
+  const action = getCloseAction();
+  tray.setContextMenu(Menu.buildFromTemplate([
+    { label: "打开酒馆界面", click: () => showPrimaryWindow() },
+    { label: "完整卡库管理", click: () => createManagerWindow() },
+    { type: "separator" },
+    { label: "关闭时：每次询问", type: "radio", checked: action === "ask", click: () => setCloseAction("ask") },
+    { label: "关闭时：最小化到托盘", type: "radio", checked: action === "tray", click: () => setCloseAction("tray") },
+    { label: "关闭时：彻底退出", type: "radio", checked: action === "quit", click: () => setCloseAction("quit") },
+    { type: "separator" },
+    { label: "退出", click: () => app.quit() },
+  ]));
+}
+
+function ensureTray() {
+  if (tray) return tray;
+  try {
+    tray = new Tray(path.join(__dirname, "icon.ico"));
+  } catch {
+    return null;
+  }
+  tray.setToolTip("酒馆角色卡库");
+  rebuildTrayMenu();
+  tray.on("double-click", () => showPrimaryWindow());
+  return tray;
+}
+
+function showPrimaryWindow() {
+  const target = tavernWindow && !tavernWindow.isDestroyed()
+    ? tavernWindow
+    : (mainWindow && !mainWindow.isDestroyed() ? mainWindow : null);
+  if (!target) {
+    createManagerWindow();
+    return;
+  }
+  if (target.isMinimized()) target.restore();
+  target.show();
+  target.focus();
+}
+
+function hideToTray(window) {
+  ensureTray();
+  window.hide();
+  if (!trayBalloonShown && tray) {
+    trayBalloonShown = true;
+    try {
+      tray.displayBalloon({ iconType: "info", title: "酒馆角色卡库", content: "已最小化到托盘，酒馆仍在后台运行；双击托盘图标可恢复窗口。" });
+    } catch {}
+  }
+}
+
+async function handleCloseRequest(window, event) {
+  const action = getCloseAction();
+  if (action === "tray") {
+    event.preventDefault();
+    hideToTray(window);
+    return;
+  }
+  if (action === "quit") {
+    app.quit();
+    return;
+  }
+  event.preventDefault();
+  try {
+    const result = await dialog.showMessageBox(window, {
+      type: "question",
+      title: "关闭酒馆角色卡库",
+      message: "关闭窗口后，要保留后台运行吗？",
+      detail: "最小化到托盘：酒馆继续在后台运行，随时从任务栏托盘恢复。\n彻底关闭：酒馆服务会一并停止。",
+      checkboxLabel: "以后都这样，不再询问",
+      checkboxChecked: false,
+      buttons: ["最小化到托盘", "彻底关闭"],
+      defaultId: 0,
+      cancelId: 0,
+      noLink: true,
+    });
+    if (result.response === 1) {
+      if (result.checkboxChecked) setCloseAction("quit");
+      app.quit();
+    } else {
+      if (result.checkboxChecked) setCloseAction("tray");
+      hideToTray(window);
+    }
+  } catch {
+    app.quit();
+  }
+}
+
 // 应用内酒馆窗口：内置模式下的主窗口（打开应用直接进入酒馆），
 // 也用于在应用内查看已在运行的外部酒馆。
 function ensureTavernWindow() {
@@ -931,6 +1037,7 @@ function ensureTavernWindow() {
     return { action: "deny" };
   });
   tavernWindow.once("ready-to-show", () => tavernWindow.show());
+  tavernWindow.on("close", (event) => { handleCloseRequest(tavernWindow, event); });
   tavernWindow.on("closed", () => { tavernWindow = null; });
   return tavernWindow;
 }
@@ -1292,6 +1399,7 @@ function registerIpcHandlers() {
       appVersion: app.getVersion(),
       isPortable: Boolean(process.env.PORTABLE_EXECUTABLE_DIR),
       preferEmbedded: settings.preferEmbedded === true,
+      closeAction: getCloseAction(),
       embeddedAvailable: embeddedAvailable(),
       embeddedVersion: readEmbeddedManifest()?.stVersion ?? null,
       embeddedRuntimeReady: embeddedRuntimeReady(),
@@ -1312,9 +1420,11 @@ function registerIpcHandlers() {
     if (preferEmbedded && !embeddedAvailable()) {
       return { ok: false, error: "当前版本未内置酒馆（精简版请使用外部目录）" };
     }
-    writeSettings({ ...settings, sillyTavernDir: dir, preferEmbedded });
+    const closeAction = ["ask", "tray", "quit"].includes(patch?.closeAction) ? patch.closeAction : settings.closeAction;
+    writeSettings({ ...settings, sillyTavernDir: dir, preferEmbedded, closeAction });
     const detected = detectTavernDir();
     tavernState = { ...tavernState, detail: `等待启动 ${detected.dir}` };
+    rebuildTrayMenu();
     return { ok: true, sillyTavernDir: detected.dir, dirExists: detected.exists };
   });
 
@@ -1622,6 +1732,7 @@ function createManagerWindow() {
     }
   });
   mainWindow.once("ready-to-show", () => { if (!SMOKE_TEST) mainWindow.show(); });
+  mainWindow.on("close", (event) => { handleCloseRequest(mainWindow, event); });
   mainWindow.on("closed", () => { mainWindow = null; });
 }
 
@@ -1629,12 +1740,7 @@ const hasLock = app.requestSingleInstanceLock();
 if (!hasLock) {
   app.quit();
 } else {
-  app.on("second-instance", () => {
-    const target = !mainWindow?.isDestroyed() ? mainWindow : (!tavernWindow?.isDestroyed() ? tavernWindow : null);
-    if (!target) return;
-    if (target.isMinimized()) target.restore();
-    target.focus();
-  });
+  app.on("second-instance", () => showPrimaryWindow());
 
   app.whenReady().then(() => {
     const detectedAtBoot = detectTavernDir();
@@ -1661,6 +1767,10 @@ if (!hasLock) {
     // 内置酒馆随应用退出；外部安装的酒馆是独立进程，不受影响
     if (tavernChild && tavernChildEmbedded) {
       try { tavernChild.kill(); } catch {}
+    }
+    if (tray) {
+      try { tray.destroy(); } catch {}
+      tray = null;
     }
   });
 

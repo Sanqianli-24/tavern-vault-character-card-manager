@@ -71,6 +71,7 @@ type DesktopSettings = {
   appVersion: string;
   isPortable: boolean;
   preferEmbedded: boolean;
+  closeAction: "ask" | "tray" | "quit";
   embeddedAvailable: boolean;
   embeddedVersion: string | null;
   embeddedRuntimeReady: boolean;
@@ -148,7 +149,7 @@ interface Window {
     exportCard(id: string): Promise<DesktopExportResult>;
     exportCards(ids: string[]): Promise<DesktopBulkExportResult>;
     getSettings(): Promise<DesktopSettings>;
-    setSettings(patch: { sillyTavernDir?: string; preferEmbedded?: boolean }): Promise<DesktopSettingsResult>;
+    setSettings(patch: { sillyTavernDir?: string; preferEmbedded?: boolean; closeAction?: "ask" | "tray" | "quit" }): Promise<DesktopSettingsResult>;
     pickDirectory(): Promise<string | null>;
     listBackups(): Promise<DesktopBackup[]>;
     createBackup(): Promise<{ ok: boolean; name?: string }>;
