@@ -1137,6 +1137,47 @@ function sendUpdateStatus(payload) {
   }
 }
 
+// 更新下载直连 GitHub 在部分网络环境极慢；本地代理（Clash 等）快百倍。
+// 只把 updater 自己的 netSession 走代理，探测顺序：环境变量 → 注册表 ProxyServer → 常见本地端口。
+async function configureUpdaterProxy(updateLog) {
+  const candidates = [];
+  const envProxy = process.env.HTTPS_PROXY || process.env.https_proxy || process.env.HTTP_PROXY || process.env.http_proxy;
+  if (envProxy) candidates.push(envProxy);
+  try {
+    const { spawnSync } = require("node:child_process");
+    const out = spawnSync("reg", ["query", "HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Internet Settings", "/v", "ProxyServer"], { encoding: "utf8" });
+    const match = String(out.stdout || "").match(/REG_SZ\s+(\S+)/);
+    if (match) candidates.push(match[1].startsWith("http") ? match[1] : `http://${match[1]}`);
+  } catch {}
+  candidates.push("http://127.0.0.1:7897", "http://127.0.0.1:7890");
+
+  const alive = (rule) => new Promise((resolve) => {
+    try {
+      const parsed = new URL(rule);
+      const socket = net.createConnection({ host: parsed.hostname, port: Number(parsed.port) || 80 });
+      socket.setTimeout(600);
+      socket.once("connect", () => { socket.destroy(); resolve(true); });
+      socket.once("timeout", () => { socket.destroy(); resolve(false); });
+      socket.once("error", () => resolve(false));
+    } catch {
+      resolve(false);
+    }
+  });
+
+  for (const rule of candidates) {
+    if (!(await alive(rule))) continue;
+    try {
+      await autoUpdater.netSession.setProxy({ proxyRules: rule });
+      updateLog("INFO", `updater proxy enabled: ${rule}`);
+      return rule;
+    } catch (error) {
+      updateLog("WARN", `setProxy(${rule}) failed: ${error?.message || error}`);
+    }
+  }
+  updateLog("INFO", "no local proxy found, updater uses direct connection");
+  return null;
+}
+
 function setupAutoUpdater() {
   // electron-updater 不支持便携版目标，强制走 GitHub 手动下载路径
   if (SMOKE_TEST || process.env.PORTABLE_EXECUTABLE_DIR) return;
@@ -1164,7 +1205,10 @@ function setupAutoUpdater() {
       updateLog("ERROR", `check/download failed: ${error?.message || error}`);
       sendUpdateStatus({ event: "error", message: String(error?.message || error) });
     });
-    autoUpdater.checkForUpdates().catch((error) => updateLog("ERROR", `checkForUpdates rejected: ${error?.message || error}`));
+    (async () => {
+      await configureUpdaterProxy(updateLog);
+      await autoUpdater.checkForUpdates().catch((error) => updateLog("ERROR", `checkForUpdates rejected: ${error?.message || error}`));
+    })();
   } catch (error) {
     try {
       fs.appendFileSync(path.join(app.getPath("userData"), "update.log"), `[${new Date().toISOString()}] ERROR init failed: ${error?.message || error}\n`);
