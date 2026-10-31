@@ -910,7 +910,7 @@ function rebuildTrayMenu() {
   const action = getCloseAction();
   tray.setContextMenu(Menu.buildFromTemplate([
     { label: "打开酒馆界面", click: () => showPrimaryWindow() },
-    { label: "完整卡库管理", click: () => createManagerWindow() },
+    { label: "完整卡库管理", click: () => { openFullManager(); } },
     { type: "separator" },
     { label: "关闭时：每次询问", type: "radio", checked: action === "ask", click: () => setCloseAction("ask") },
     { label: "关闭时：最小化到托盘", type: "radio", checked: action === "tray", click: () => setCloseAction("tray") },
@@ -996,6 +996,23 @@ async function handleCloseRequest(window, event) {
 
 // 应用内酒馆窗口：内置模式下的主窗口（打开应用直接进入酒馆），
 // 也用于在应用内查看已在运行的外部酒馆。
+// 完整管理入口：优先在酒馆页面内打开（扩展挂载的停靠面板），失败回退独立窗口
+async function openFullManager() {
+  const loaded = tavernWindow && !tavernWindow.isDestroyed()
+    && /^http:\/\/(127\.0\.0\.1|localhost):\d+/.test(tavernWindow.webContents.getURL());
+  if (loaded) {
+    if (tavernWindow.isMinimized()) tavernWindow.restore();
+    tavernWindow.show();
+    tavernWindow.focus();
+    const opened = await tavernWindow.webContents.executeJavaScript(
+      "typeof window.__tavernVaultOpenManager === 'function' ? (window.__tavernVaultOpenManager(), true) : false",
+      true,
+    ).catch(() => false);
+    if (opened) return;
+  }
+  createManagerWindow();
+}
+
 function ensureTavernWindow() {
   if (tavernWindow && !tavernWindow.isDestroyed()) return tavernWindow;
   tavernWindow = new BrowserWindow({
@@ -1005,6 +1022,7 @@ function ensureTavernWindow() {
     minHeight: 640,
     backgroundColor: "#0d0d11",
     title: "酒馆角色卡库",
+    autoHideMenuBar: true,
     show: false,
     webPreferences: {
       preload: path.join(__dirname, "preload.cjs"),
@@ -1013,41 +1031,8 @@ function ensureTavernWindow() {
       sandbox: true,
     },
   });
-  // 酒馆页面没有自己的入口回到卡库，用最小菜单栏提供入口
-  tavernWindow.setMenu(Menu.buildFromTemplate([
-    {
-      label: "角色卡库",
-      submenu: [
-        {
-          label: "完整卡库管理",
-          // 内置模式优先在酒馆页面里打开（扩展挂载的覆盖层），不再另开窗口
-          click: async () => {
-            const loaded = tavernWindow && !tavernWindow.isDestroyed()
-              && /^http:\/\/(127\.0\.0\.1|localhost):\d+/.test(tavernWindow.webContents.getURL());
-            if (loaded) {
-              tavernWindow.show();
-              tavernWindow.focus();
-              const opened = await tavernWindow.webContents.executeJavaScript(
-                "typeof window.__tavernVaultOpenManager === 'function' ? (window.__tavernVaultOpenManager(), true) : false",
-                true,
-              ).catch(() => false);
-              if (opened) return;
-            }
-            createManagerWindow();
-          },
-        },
-        {
-          label: "在浏览器打开酒馆",
-          click: async () => {
-            const port = detectTavernPort();
-            if (await isPortOpen(port)) await shell.openExternal(`http://127.0.0.1:${port}`);
-          },
-        },
-        { type: "separator" },
-        { label: "退出", click: () => app.quit() },
-      ],
-    },
-  ]));
+  // 所有入口都在酒馆页面内（魔法棒菜单/角色面板按钮）与托盘，不再挂原生菜单栏
+  tavernWindow.setMenu(null);
   tavernWindow.webContents.setWindowOpenHandler(({ url }) => {
     if (/^http:\/\/(127\.0\.0\.1|localhost):\d+\//i.test(url)) return { action: "allow" };
     if (/^https?:/i.test(url)) shell.openExternal(url);

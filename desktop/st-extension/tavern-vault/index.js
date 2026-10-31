@@ -359,7 +359,10 @@ function setupManagerBridge() {
 }
 
 async function mountManagerOverlay() {
-    if (document.getElementById('tv_manager_overlay')) return;
+    if (document.getElementById('tv_manager_overlay')) {
+        document.getElementById('tv_manager_overlay').classList.remove('tv-max');
+        return;
+    }
     setupManagerBridge();
 
     let html = '';
@@ -372,36 +375,79 @@ async function mountManagerOverlay() {
         return;
     }
 
+    // 停靠在右侧：与酒馆并排可见、可拖拽调宽、可最大化；不再整屏盖住酒馆
     const overlay = document.createElement('div');
     overlay.id = 'tv_manager_overlay';
+    overlay.className = 'tv-docked';
+    if (localStorage.getItem('tv_dock_max') === '1') overlay.classList.add('tv-max');
+    else overlay.style.width = `${localStorage.getItem('tv_dock_w') || 46}%`;
+
+    const resizer = document.createElement('div');
+    resizer.className = 'tv-manager-resizer';
+    resizer.title = '拖拽调整宽度';
+
     const head = document.createElement('div');
     head.className = 'tv-manager-head';
     const title = document.createElement('span');
     title.textContent = '角色卡库 · 完整管理';
+    const headBtns = document.createElement('div');
+    headBtns.className = 'tv-manager-head-btns';
+    const maximize = document.createElement('button');
+    maximize.className = 'tv-manager-btn';
+    maximize.textContent = '⛶';
+    maximize.title = '切换全屏/停靠';
+    maximize.addEventListener('click', () => {
+        const el = document.getElementById('tv_manager_overlay');
+        if (!el) return;
+        el.classList.toggle('tv-max');
+        localStorage.setItem('tv_dock_max', el.classList.contains('tv-max') ? '1' : '0');
+    });
     const close = document.createElement('button');
-    close.className = 'tv-manager-close';
+    close.className = 'tv-manager-btn';
     close.textContent = '×';
     close.title = '关闭（Esc）';
     close.addEventListener('click', unmountManagerOverlay);
-    head.append(title, close);
+    headBtns.append(maximize, close);
+    head.append(title, headBtns);
 
     const frame = document.createElement('iframe');
     frame.className = 'tv-manager-frame';
     frame.srcdoc = html;
     managerFrame = frame;
 
-    overlay.append(head, frame);
+    overlay.append(resizer, head, frame);
     document.body.appendChild(overlay);
-    overlay.addEventListener('keydown', (event) => {
-        if (event.key === 'Escape') unmountManagerOverlay();
+
+    // 拖拽调宽
+    resizer.addEventListener('pointerdown', (event) => {
+        event.preventDefault();
+        resizer.setPointerCapture(event.pointerId);
+        const move = (e) => {
+            const width = Math.round(Math.min(80, Math.max(28, ((window.innerWidth - e.clientX) / window.innerWidth) * 100)));
+            overlay.style.width = `${width}%`;
+            localStorage.setItem('tv_dock_w', String(width));
+        };
+        const up = () => {
+            resizer.removeEventListener('pointermove', move);
+            resizer.removeEventListener('pointerup', up);
+        };
+        resizer.addEventListener('pointermove', move);
+        resizer.addEventListener('pointerup', up);
     });
+
+    document.addEventListener('keydown', tvManagerEscapeHandler);
     close.focus();
+}
+
+function tvManagerEscapeHandler(event) {
+    if (event.key === 'Escape') unmountManagerOverlay();
 }
 
 function unmountManagerOverlay() {
     const overlay = document.getElementById('tv_manager_overlay');
     if (overlay) overlay.remove();
     managerFrame = null;
+    document.removeEventListener('keydown', tvManagerEscapeHandler);
 }
 
 // 宿主菜单「完整卡库管理」通过它把入口收进酒馆页面
@@ -466,12 +512,29 @@ function setupUpdateToast() {
     } catch { /* 提示失败不影响使用 */ }
 }
 
+// 魔法棒扩展菜单入口：酒馆自带的扩展菜单位置，用户最常找的地方
+function addWandMenuEntry() {
+    const menu = document.getElementById('extensionsMenu');
+    if (!menu || document.getElementById('tv_wand_item')) return;
+    const item = document.createElement('div');
+    item.id = 'tv_wand_item';
+    item.classList.add('menu_button', 'fa-solid', 'fa-book-open', 'interactable');
+    item.title = '角色卡库';
+    item.addEventListener('click', () => {
+        const wand = document.getElementById('extensionsMenuButton');
+        if (wand?.classList.contains('active')) wand.click();
+        openPanel();
+    });
+    menu.appendChild(item);
+}
+
 async function init() {
     if (document.getElementById(BUTTON_ID)) return;
     const container = document.querySelector('#rm_buttons_container');
     if (!container) return;
     bindGlobalPanelEvents();
     setupUpdateToast();
+    addWandMenuEntry();
 
     const button = document.createElement('div');
     button.id = BUTTON_ID;

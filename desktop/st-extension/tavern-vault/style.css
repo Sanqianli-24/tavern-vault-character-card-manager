@@ -254,3 +254,58 @@
 .tv-full {
   white-space: nowrap;
 }
+
+/* 停靠模式：右侧面板与酒馆并排，不整屏遮挡 */
+#tv_manager_overlay.tv-docked {
+  left: auto;
+  width: 46%;
+  min-width: 380px;
+  border-left: 1px solid rgba(255, 255, 255, 0.16);
+  box-shadow: -18px 0 44px rgba(0, 0, 0, 0.45);
+}
+
+#tv_manager_overlay.tv-docked.tv-max {
+  width: 100%;
+  box-shadow: none;
+}
+
+.tv-manager-resizer {
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  width: 8px;
+  cursor: col-resize;
+  background: transparent;
+  z-index: 2;
+}
+
+.tv-manager-resizer:hover {
+  background: rgba(217, 123, 74, 0.35);
+}
+
+.tv-manager-head-btns {
+  display: flex;
+  gap: 8px;
+}
+
+.tv-manager-btn {
+  width: 32px;
+  height: 32px;
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  border-radius: 8px;
+  background: transparent;
+  color: #ccc;
+  font-size: 16px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.tv-manager-btn:hover {
+  border-color: rgba(255, 255, 255, 0.4);
+  color: #fff;
+}
+
+#tv_wand_item {
+  font-size: 20px;
+}
