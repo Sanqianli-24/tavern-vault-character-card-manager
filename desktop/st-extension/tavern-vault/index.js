@@ -454,11 +454,24 @@ async function openPanel() {
 
 // ---------- 启动 ----------
 
+// 应用更新提示：宿主在酒馆页面上直接可见（此前只有卡库窗口能显示更新状态）
+function setupUpdateToast() {
+    const api = host();
+    if (!api?.onUpdateStatus) return;
+    try {
+        api.onUpdateStatus((status) => {
+            if (status?.event === 'available') toast('success', `发现新版本 v${status.version || ''}，正在后台下载…`);
+            else if (status?.event === 'downloaded') toast('success', `新版本 v${status.version || ''} 已就绪，退出应用时自动更新`);
+        });
+    } catch { /* 提示失败不影响使用 */ }
+}
+
 async function init() {
     if (document.getElementById(BUTTON_ID)) return;
     const container = document.querySelector('#rm_buttons_container');
     if (!container) return;
     bindGlobalPanelEvents();
+    setupUpdateToast();
 
     const button = document.createElement('div');
     button.id = BUTTON_ID;

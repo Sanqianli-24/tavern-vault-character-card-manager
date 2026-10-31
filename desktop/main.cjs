@@ -1144,13 +1144,31 @@ function setupAutoUpdater() {
     autoUpdater = require("electron-updater").autoUpdater;
     autoUpdater.autoDownload = true;
     autoUpdater.autoInstallOnAppQuit = true;
+    // 更新过程的完整日志落盘，失败不再静默（此前私有仓库 404 被吞，用户无从得知）
+    const updateLog = (level, message) => {
+      try {
+        fs.appendFileSync(path.join(app.getPath("userData"), "update.log"), `[${new Date().toISOString()}] ${level} ${String(message).slice(0, 500)}\n`);
+      } catch {}
+    };
+    autoUpdater.logger = {
+      info: (m) => updateLog("INFO", m),
+      warn: (m) => updateLog("WARN", m),
+      error: (m) => updateLog("ERROR", m),
+      debug: (m) => updateLog("DEBUG", m),
+    };
     autoUpdater.on("update-available", (info) => sendUpdateStatus({ event: "available", version: info?.version }));
     autoUpdater.on("update-not-available", () => sendUpdateStatus({ event: "not-available" }));
     autoUpdater.on("download-progress", (progress) => sendUpdateStatus({ event: "progress", percent: Math.round(progress?.percent ?? 0) }));
     autoUpdater.on("update-downloaded", (info) => sendUpdateStatus({ event: "downloaded", version: info?.version }));
-    autoUpdater.on("error", (error) => sendUpdateStatus({ event: "error", message: String(error?.message || error) }));
-    autoUpdater.checkForUpdates().catch(() => undefined);
-  } catch {
+    autoUpdater.on("error", (error) => {
+      updateLog("ERROR", `check/download failed: ${error?.message || error}`);
+      sendUpdateStatus({ event: "error", message: String(error?.message || error) });
+    });
+    autoUpdater.checkForUpdates().catch((error) => updateLog("ERROR", `checkForUpdates rejected: ${error?.message || error}`));
+  } catch (error) {
+    try {
+      fs.appendFileSync(path.join(app.getPath("userData"), "update.log"), `[${new Date().toISOString()}] ERROR init failed: ${error?.message || error}\n`);
+    } catch {}
     autoUpdater = null;
   }
 }
